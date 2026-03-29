@@ -1,0 +1,40 @@
+Act as a senior GLPI 11 plugin engineer, senior PHP 8.1 developer, senior Python network diagnostics engineer, and senior secure systems architect.
+
+Project name: ClearSignal Diagnostics
+Plugin folder name: clearsignaldiag
+Target platform: GLPI 11
+IDE/workflow: VS Code
+
+Read the entire existing workspace first before changing anything. Also read any existing project notes, README files, plugin structure, and related files so you understand the wider System Force direction before writing code.
+
+Requirements:
+- Keep to GLPI 11 conventions
+- Maintain modular, readable, production-safe code
+- Sanitise and validate all user input
+- Never shell execute raw user input directly
+- Use allow-listed commands and escaped arguments only
+- Apply timeouts to all diagnostics
+- Keep wording easy to edit later
+- The diagnostics tab must sit on the ticket screen
+- The diagnostics result must be insertable as a private ticket follow-up
+
+Checks to support:
+- ping
+- traceroute
+- dns diagnostics
+- forward lookup
+- reverse lookup
+- website check
+- mx record check
+- spf check
+- dkim check
+- dmarc check
+
+DNS diagnostics must include:
+- delegation trace from root to child
+- DNSSEC validation comparison with and without checking disabled
+- parent vs child NS mismatch detection
+- Cloudflare proxy detection
+- resolver comparison across 1.1.1.1, 8.8.8.8 and 9.9.9.9
+
+Improve this codebase where needed, but preserve the plugin structure and ticket-based workflow.
