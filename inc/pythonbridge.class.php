@@ -41,24 +41,19 @@ class PluginClearsignaldiagPythonBridge {
             2 => ['pipe', 'w'],
         ];
 
-        $command = [
-            $python,
-            $script,
-            '--json'
-        ];
+        // Use string command — proc_open with array bypasses shell,
+        // but string form is more reliable across PHP-FPM configurations.
+        $command = escapeshellarg($python) . ' ' . escapeshellarg($script) . ' --json';
 
+        // PHP-FPM runs with clear_env=yes by default, so the worker inherits
+        // an empty environment. We must explicitly provide everything Python needs.
         $env = [
-            'LC_ALL' => 'C',
-            'LANG'   => 'C',
+            'LC_ALL'     => 'C',
+            'LANG'       => 'C',
+            'PATH'       => '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+            'HOME'       => '/tmp',
+            'PYTHONDONTWRITEBYTECODE' => '1',
         ];
-
-        // On Windows, inherit PATH so system commands (ping, tracert) are available
-        if (PHP_OS_FAMILY === 'Windows') {
-            $env['PATH'] = getenv('PATH') ?: '';
-            $env['SystemRoot'] = getenv('SystemRoot') ?: 'C:\\Windows';
-        } else {
-            $env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-        }
 
         $process = proc_open($command, $descriptors, $pipes, $pluginDir, $env);
 
@@ -83,6 +78,7 @@ class PluginClearsignaldiagPythonBridge {
         $start = time();
         $stdout = '';
         $stderr = '';
+        $exitCode = -1;
 
         do {
             $status = proc_get_status($process);
@@ -90,6 +86,9 @@ class PluginClearsignaldiagPythonBridge {
             $stderr .= stream_get_contents($pipes[2]);
 
             if (!$status['running']) {
+                // proc_get_status returns the real exit code only on the first
+                // call after the process exits. Capture it here.
+                $exitCode = $status['exitcode'];
                 break;
             }
 
@@ -109,8 +108,7 @@ class PluginClearsignaldiagPythonBridge {
 
         fclose($pipes[1]);
         fclose($pipes[2]);
-
-        $exitCode = proc_close($process);
+        proc_close($process);
 
         if ($exitCode !== 0) {
             $errMsg = trim($stderr);

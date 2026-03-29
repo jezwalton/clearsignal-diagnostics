@@ -2,11 +2,11 @@
 
 class PluginClearsignaldiagTickettab extends CommonGLPI {
 
-    public static function getTabNameForItem(CommonGLPI $item, $withtemplate = 0): string {
+    function getTabNameForItem(CommonGLPI $item, $withtemplate = 0) {
         return ($item instanceof Ticket) ? __('Diagnostics') : '';
     }
 
-    public static function displayTabContentForItem(CommonGLPI $item, $tabnum = 1, $withtemplate = 0): bool {
+    static function displayTabContentForItem(CommonGLPI $item, $tabnum = 1, $withtemplate = 0) {
         if (!$item instanceof Ticket) {
             return false;
         }

@@ -1,12 +1,14 @@
 <?php
 include('../../../inc/includes.php');
 
+while (ob_get_level()) {
+    ob_end_clean();
+}
+header('Content-Type: application/json; charset=UTF-8');
+
 Session::checkLoginUser();
-header('Content-Type: application/json');
 
 try {
-    Session::checkCSRF($_POST);
-
     $ticketId = (int)($_POST['tickets_id'] ?? 0);
     $summary = trim((string)($_POST['summary'] ?? ''));
 
@@ -23,7 +25,6 @@ try {
         throw new RuntimeException('Ticket not found.');
     }
 
-    // Check the user has follow-up rights on this ticket
     if (!$ticket->canAddFollowups()) {
         throw new RuntimeException('You do not have permission to add follow-ups to this ticket.');
     }
@@ -57,3 +58,5 @@ try {
         'message' => $e->getMessage()
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 }
+
+exit;

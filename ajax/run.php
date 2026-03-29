@@ -1,12 +1,15 @@
 <?php
 include('../../../inc/includes.php');
 
+// Ensure clean output for JSON response
+while (ob_get_level()) {
+    ob_end_clean();
+}
+header('Content-Type: application/json; charset=UTF-8');
+
 Session::checkLoginUser();
-header('Content-Type: application/json');
 
 try {
-    Session::checkCSRF($_POST);
-
     $ticketId = (int)($_POST['tickets_id'] ?? 0);
     $target = trim((string)($_POST['target'] ?? ''));
     $checks = $_POST['checks'] ?? [];
@@ -24,7 +27,6 @@ try {
         throw new RuntimeException('Select at least one check.');
     }
 
-    // Verify user can view this ticket
     $ticket = new Ticket();
     if (!$ticket->getFromDB($ticketId)) {
         throw new RuntimeException('Ticket not found.');
@@ -46,3 +48,5 @@ try {
         'message' => $e->getMessage()
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 }
+
+exit;

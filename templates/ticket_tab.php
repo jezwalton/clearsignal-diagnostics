@@ -130,6 +130,13 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
   const PLUGIN_ROOT = '<?php echo addslashes($pluginRoot); ?>';
   const SHOW_RAW = <?php echo $showRaw ? 'true' : 'false'; ?>;
 
+  function getCsrfToken() {
+    const meta = document.querySelector('meta[property="glpi:csrf_token"]');
+    if (meta) return meta.getAttribute('content');
+    const input = document.querySelector('input[name="_glpi_csrf_token"]');
+    return input ? input.value : '';
+  }
+
   let lastResult = null;
   let lastSummary = '';
 
@@ -301,20 +308,32 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     hideError();
     resultsDiv.style.display = 'none';
     loading.style.display = 'block';
+
+    // Capture form data BEFORE disabling inputs (disabled fields are excluded from FormData)
+    const data = new FormData(form);
+
     setFormEnabled(false);
     btnAdd.disabled = true;
     badge.style.display = 'inline-block';
     badge.textContent = 'Running...';
     badge.className = 'badge bg-primary';
 
-    const data = new FormData(form);
-
     fetch(PLUGIN_ROOT + '/ajax/run.php', {
       method: 'POST',
       body: data,
-      credentials: 'same-origin'
+      credentials: 'same-origin',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Glpi-Csrf-Token': getCsrfToken()
+      }
     })
-    .then(r => r.json())
+    .then(r => {
+      const ct = r.headers.get('content-type') || '';
+      if (!ct.includes('json')) {
+        return r.text().then(t => { throw new Error('Server returned non-JSON response (HTTP ' + r.status + '). Check plugin configuration.'); });
+      }
+      return r.json();
+    })
     .then(resp => {
       loading.style.display = 'none';
       setFormEnabled(true);
@@ -374,9 +393,19 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     fetch(PLUGIN_ROOT + '/ajax/addtoticket.php', {
       method: 'POST',
       body: data,
-      credentials: 'same-origin'
+      credentials: 'same-origin',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Glpi-Csrf-Token': getCsrfToken()
+      }
     })
-    .then(r => r.json())
+    .then(r => {
+      const ct = r.headers.get('content-type') || '';
+      if (!ct.includes('json')) {
+        return r.text().then(t => { throw new Error('Server returned non-JSON response (HTTP ' + r.status + ').'); });
+      }
+      return r.json();
+    })
     .then(resp => {
       btnAdd.innerHTML = '<i class="ti ti-notes me-1"></i>Add results to ticket';
       btnAdd.disabled = false;
