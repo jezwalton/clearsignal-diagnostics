@@ -16,12 +16,13 @@ function plugin_init_clearsignaldiag(): void {
     Plugin::registerClass(PluginClearsignaldiagWebsitemenu::class);
     Plugin::registerClass(PluginClearsignaldiagPortmenu::class);
     Plugin::registerClass(PluginClearsignaldiagHealthmenu::class);
+    Plugin::registerClass(PluginClearsignaldiagDashboardmenu::class);
     Plugin::registerClass(PluginClearsignaldiagEntitydomain::class);
 
     // Add menu entries under Tools
     if (Session::haveRight('ticket', READ)) {
         $PLUGIN_HOOKS['menu_toadd']['clearsignaldiag'] = [
-            'tools' => ['PluginClearsignaldiagMenu', 'PluginClearsignaldiagEmailmenu', 'PluginClearsignaldiagWebsitemenu', 'PluginClearsignaldiagPortmenu', 'PluginClearsignaldiagHealthmenu']
+            'tools' => ['PluginClearsignaldiagMenu', 'PluginClearsignaldiagEmailmenu', 'PluginClearsignaldiagWebsitemenu', 'PluginClearsignaldiagPortmenu', 'PluginClearsignaldiagHealthmenu', 'PluginClearsignaldiagDashboardmenu']
         ];
     }
 
