@@ -261,48 +261,20 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     const filtered = filterData();
     if (!filtered.length) return;
 
-    if (!confirm('This will run a full health check on ' + filtered.length + ' domain(s). This may take several minutes. Continue?')) return;
+    if (!confirm('This will run a full health check on ' + filtered.length + ' domain(s). Continue?')) return;
 
     scanAllBtn.disabled = true;
     scanProgress.style.display = 'block';
     scanErrors.innerHTML = '';
-    let completed = 0;
-    let errors = 0;
     const total = filtered.length;
-    const CONCURRENCY = 1; // Sequential to avoid exhausting PHP-FPM workers
+    let dispatched = 0;
+    let errors = 0;
 
-    function updateProgress(currentDomains) {
-      const pct = Math.round((completed / total) * 100);
-      scanText.textContent = 'Scanning: ' + currentDomains.join(', ');
-      scanCounter.textContent = completed + ' / ' + total + (errors > 0 ? ' (' + errors + ' error' + (errors>1?'s':'') + ')' : '');
+    function updateScanUI(text, done, totalDone) {
+      const pct = Math.round(((totalDone || dispatched) / total) * 100);
+      scanText.textContent = text;
+      scanCounter.textContent = (totalDone || dispatched) + ' / ' + total + (errors > 0 ? ' (' + errors + ' error' + (errors>1?'s':'') + ')' : '');
       scanBar.style.width = pct + '%';
-    }
-
-    async function scanOne(item) {
-      try {
-        const data = new FormData();
-        data.append('domain', item.domain);
-        data.append('entities_id', item.entities_id);
-        data.append('store_result', '1');
-        data.append('dkim_selector', 'selector1');
-
-        const r = await fetch(PLUGIN_ROOT + '/ajax/health_check.php', {
-          method: 'POST', body: data, credentials: 'same-origin',
-          headers: {'X-Requested-With':'XMLHttpRequest','X-Glpi-Csrf-Token':getCsrfToken()}
-        });
-
-        const ct = r.headers.get('content-type') || '';
-        if (!ct.includes('json')) {
-          throw new Error('Non-JSON response (HTTP ' + r.status + ') — possible session/CSRF timeout');
-        }
-
-        const resp = await r.json();
-        if (!resp.success) throw new Error(resp.message);
-      } catch (err) {
-        errors++;
-        scanErrors.innerHTML += '<div class="small text-danger"><code>' + esc(item.domain) + '</code>: ' + esc(err.message) + '</div>';
-      }
-      completed++;
     }
 
     async function refreshFleetData() {
@@ -326,21 +298,81 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
       } catch(e) {}
     }
 
-    // Process in batches of CONCURRENCY, refresh table after each batch
-    const queue = [...filtered];
-    while (queue.length > 0) {
-      const batch = queue.splice(0, CONCURRENCY);
-      updateProgress(batch.map(b => b.domain));
-      await Promise.all(batch.map(item => scanOne(item)));
+    // Step 1: Dispatch all jobs to queue (or run inline if no queue)
+    const jobIds = [];
+    let useQueue = false;
+
+    updateScanUI('Dispatching ' + total + ' health checks...', false);
+
+    for (const item of filtered) {
+      try {
+        const data = new FormData();
+        data.append('domain', item.domain);
+        data.append('entities_id', item.entities_id);
+        data.append('store_result', '1');
+        data.append('dkim_selector', 'selector1');
+        data.append('mode', 'auto');
+
+        const r = await fetch(PLUGIN_ROOT + '/ajax/health_check.php', {
+          method: 'POST', body: data, credentials: 'same-origin',
+          headers: {'X-Requested-With':'XMLHttpRequest','X-Glpi-Csrf-Token':getCsrfToken()}
+        });
+
+        const ct = r.headers.get('content-type') || '';
+        if (!ct.includes('json')) throw new Error('Non-JSON (HTTP ' + r.status + ')');
+
+        const resp = await r.json();
+        if (!resp.success) throw new Error(resp.message);
+
+        if (resp.queued && resp.job_id) {
+          jobIds.push(resp.job_id);
+          useQueue = true;
+        }
+        dispatched++;
+        updateScanUI('Dispatched: ' + item.domain, false);
+      } catch (err) {
+        errors++;
+        dispatched++;
+        scanErrors.innerHTML += '<div class="small text-danger"><code>' + esc(item.domain) + '</code>: ' + esc(err.message) + '</div>';
+      }
+    }
+
+    if (useQueue && jobIds.length > 0) {
+      // Step 2: Poll for queue completion
+      updateScanUI('Queued ' + jobIds.length + ' jobs — waiting for workers...', false);
+
+      let allDone = false;
+      while (!allDone) {
+        await new Promise(resolve => setTimeout(resolve, 3000)); // Poll every 3s
+
+        try {
+          const pollResp = await fetch(PLUGIN_ROOT + '/ajax/job_status.php?action=poll_jobs&job_ids=' + jobIds.join(','), {
+            credentials: 'same-origin',
+            headers: {'X-Requested-With':'XMLHttpRequest','X-Glpi-Csrf-Token':getCsrfToken()}
+          }).then(r => r.json());
+
+          if (pollResp.success) {
+            const done = pollResp.completed + pollResp.failed;
+            updateScanUI('Processing: ' + done + ' done, ' + pollResp.pending + ' pending...', false, done);
+            errors = pollResp.failed;
+            allDone = pollResp.all_done;
+          }
+        } catch(e) {
+          // Keep polling even if one poll fails
+        }
+
+        await refreshFleetData();
+      }
+    } else {
+      // Direct mode — already completed, just refresh
       await refreshFleetData();
     }
 
-    scanText.textContent = 'Scan complete — ' + total + ' domains, ' + errors + ' error' + (errors!==1?'s':'');
+    scanText.textContent = 'Scan complete — ' + total + ' domains' + (errors > 0 ? ', ' + errors + ' error(s)' : '');
     scanBar.style.width = '100%';
     scanBar.classList.remove('progress-bar-animated');
     scanAllBtn.disabled = false;
 
-    // Final refresh
     setTimeout(loadFleet, 1000);
   });
 
