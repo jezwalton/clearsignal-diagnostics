@@ -1924,6 +1924,246 @@ def check_dns_diagnostic(host: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Port / Service Scanner
+# ---------------------------------------------------------------------------
+
+PORT_PRESETS = {
+    "quick": {
+        "label": "Quick Scan",
+        "ports": [
+            (22, "tcp", "SSH"),
+            (25, "tcp", "SMTP"),
+            (53, "tcp", "DNS"),
+            (80, "tcp", "HTTP"),
+            (443, "tcp", "HTTPS"),
+            (3389, "tcp", "RDP"),
+        ],
+    },
+    "mail": {
+        "label": "Mail Server",
+        "ports": [
+            (25, "tcp", "SMTP"),
+            (110, "tcp", "POP3"),
+            (143, "tcp", "IMAP"),
+            (465, "tcp", "SMTPS"),
+            (587, "tcp", "SMTP Submission"),
+            (993, "tcp", "IMAPS"),
+            (995, "tcp", "POP3S"),
+        ],
+    },
+    "web": {
+        "label": "Web Server",
+        "ports": [
+            (80, "tcp", "HTTP"),
+            (443, "tcp", "HTTPS"),
+            (8080, "tcp", "HTTP Alt"),
+            (8443, "tcp", "HTTPS Alt"),
+        ],
+    },
+    "remote": {
+        "label": "Remote Access",
+        "ports": [
+            (22, "tcp", "SSH"),
+            (3389, "tcp", "RDP"),
+            (5900, "tcp", "VNC"),
+            (4081, "tcp", "Splashtop/RMM"),
+        ],
+    },
+    "voip": {
+        "label": "VoIP",
+        "ports": [
+            (5060, "tcp", "SIP"),
+            (5061, "tcp", "SIP TLS"),
+            (5060, "udp", "SIP UDP"),
+        ],
+    },
+    "management": {
+        "label": "Management / Monitoring",
+        "ports": [
+            (161, "udp", "SNMP"),
+            (161, "tcp", "SNMP TCP"),
+            (162, "udp", "SNMP Trap"),
+            (4081, "tcp", "Splashtop/RMM"),
+            (22, "tcp", "SSH"),
+            (443, "tcp", "HTTPS Mgmt"),
+        ],
+    },
+    "full": {
+        "label": "Comprehensive",
+        "ports": [
+            (22, "tcp", "SSH"),
+            (25, "tcp", "SMTP"),
+            (53, "tcp", "DNS"),
+            (80, "tcp", "HTTP"),
+            (110, "tcp", "POP3"),
+            (143, "tcp", "IMAP"),
+            (161, "tcp", "SNMP TCP"),
+            (161, "udp", "SNMP"),
+            (443, "tcp", "HTTPS"),
+            (465, "tcp", "SMTPS"),
+            (587, "tcp", "SMTP Submission"),
+            (993, "tcp", "IMAPS"),
+            (995, "tcp", "POP3S"),
+            (3389, "tcp", "RDP"),
+            (4081, "tcp", "Splashtop/RMM"),
+            (5060, "tcp", "SIP"),
+            (5061, "tcp", "SIP TLS"),
+        ],
+    },
+}
+
+
+def _scan_tcp_port(host: str, port: int, timeout: float = 2.0) -> Dict[str, Any]:
+    """Scan a single TCP port — connect, grab banner if possible."""
+    result: Dict[str, Any] = {"port": port, "protocol": "tcp", "state": "closed"}
+    try:
+        start = time.perf_counter()
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            elapsed = round((time.perf_counter() - start) * 1000, 1)
+            result["state"] = "open"
+            result["response_time_ms"] = elapsed
+
+            # Try banner grab
+            try:
+                sock.settimeout(1.0)
+                if port in (80, 8080, 8443):
+                    sock.sendall(b"HEAD / HTTP/1.0\r\nHost: probe\r\n\r\n")
+                banner = sock.recv(512)
+                if banner:
+                    result["banner"] = banner.decode(errors="replace").strip()[:200]
+            except Exception:
+                pass
+
+            # TLS info — only probe if the port is already open, reuse connection
+            if port in (443, 465, 993, 995, 8443, 5061):
+                try:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    with socket.create_connection((host, port), timeout=1.5) as sock2:
+                        with ctx.wrap_socket(sock2, server_hostname=host) as ssock:
+                            result["tls_version"] = ssock.version()
+                except Exception:
+                    pass
+
+    except socket.timeout:
+        result["state"] = "filtered"
+    except ConnectionRefusedError:
+        result["state"] = "closed"
+    except OSError as exc:
+        err_str = str(exc).lower()
+        if "refused" in err_str:
+            result["state"] = "closed"
+        elif "timed out" in err_str or "timeout" in err_str:
+            result["state"] = "filtered"
+        else:
+            result["state"] = "error"
+            result["error"] = str(exc)
+
+    return result
+
+
+def _scan_udp_port(host: str, port: int, timeout: float = 2.0) -> Dict[str, Any]:
+    """Scan a single UDP port — best-effort, UDP scanning is unreliable."""
+    result: Dict[str, Any] = {"port": port, "protocol": "udp", "state": "open|filtered"}
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+
+        # Send appropriate probe
+        if port == 161:
+            # SNMP v2c GET request for sysDescr
+            snmp_get = (
+                b"\x30\x26\x02\x01\x01\x04\x06public\xa0\x19\x02\x04\x00\x00\x00\x01"
+                b"\x02\x01\x00\x02\x01\x00\x30\x0b\x30\x09\x06\x05\x2b\x06\x01\x02\x01\x05\x00"
+            )
+            sock.sendto(snmp_get, (host, port))
+        elif port == 53:
+            # DNS query for version.bind
+            dns_query = b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03"
+            sock.sendto(dns_query, (host, port))
+        elif port in (5060,):
+            # SIP OPTIONS probe
+            sock.sendto(b"OPTIONS sip:probe@probe SIP/2.0\r\n\r\n", (host, port))
+        else:
+            sock.sendto(b"\x00", (host, port))
+
+        try:
+            data, _ = sock.recvfrom(1024)
+            result["state"] = "open"
+            if data:
+                if port == 161 and len(data) > 10:
+                    result["banner"] = "SNMP responding"
+                elif port == 53:
+                    result["banner"] = "DNS responding"
+                else:
+                    result["banner"] = f"{len(data)} bytes response"
+        except socket.timeout:
+            result["state"] = "open|filtered"
+            result["note"] = "No response (may be filtered or service not responding)"
+
+        sock.close()
+    except Exception as exc:
+        result["state"] = "error"
+        result["error"] = str(exc)
+
+    return result
+
+
+def check_port_scan(host: str, preset: str = "full", custom_ports: Optional[List[Dict]] = None) -> Dict[str, Any]:
+    """Scan ports based on preset or custom list."""
+    ports_to_scan: List[Tuple[int, str, str]] = []
+
+    if custom_ports:
+        for cp in custom_ports:
+            ports_to_scan.append((int(cp.get("port", 0)), cp.get("protocol", "tcp"), cp.get("service", "")))
+    elif preset in PORT_PRESETS:
+        ports_to_scan = PORT_PRESETS[preset]["ports"]
+    else:
+        ports_to_scan = PORT_PRESETS["full"]["ports"]
+
+    results: List[Dict[str, Any]] = []
+    open_count = 0
+    closed_count = 0
+    filtered_count = 0
+
+    for port, proto, service_name in ports_to_scan:
+        if proto == "udp":
+            scan = _scan_udp_port(host, port)
+        else:
+            scan = _scan_tcp_port(host, port)
+
+        scan["service"] = service_name
+        results.append(scan)
+
+        if scan["state"] == "open":
+            open_count += 1
+        elif scan["state"] == "closed":
+            closed_count += 1
+        else:
+            filtered_count += 1
+
+    preset_label = PORT_PRESETS.get(preset, {}).get("label", preset) if not custom_ports else "Custom"
+
+    summary = f"{open_count} open, {closed_count} closed, {filtered_count} filtered — {preset_label} ({len(results)} ports)"
+
+    return ok_check(
+        "Port Scan",
+        summary,
+        {
+            "host": host,
+            "preset": preset,
+            "preset_label": preset_label,
+            "results": results,
+            "open_count": open_count,
+            "closed_count": closed_count,
+            "filtered_count": filtered_count,
+            "total_scanned": len(results),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main dispatcher
 # ---------------------------------------------------------------------------
 
@@ -2012,6 +2252,11 @@ def run_checks(payload: Dict[str, Any]) -> Dict[str, Any]:
             output.append(check_caa_records(domain))
         elif check == "cf_ssl_mode" and host:
             output.append(check_cf_ssl_mode(host))
+        # Port scanner
+        elif check == "port_scan" and host:
+            scan_preset = payload.get("scan_preset", "full")
+            custom_ports = payload.get("custom_ports")
+            output.append(check_port_scan(host, preset=scan_preset, custom_ports=custom_ports))
         # Email header analysis (payload contains raw_headers instead of target)
         elif check == "email_header_analysis":
             raw_headers = payload.get("raw_headers", "")

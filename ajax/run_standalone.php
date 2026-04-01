@@ -34,6 +34,8 @@ try {
         'http2_support', 'caa_records', 'cf_ssl_mode',
         // Email header analysis
         'email_header_analysis',
+        // Port scanner
+        'port_scan',
     ];
     $cleanChecks = array_values(array_intersect($allowedChecks, $checks));
     if (count($cleanChecks) === 0) {
@@ -67,6 +69,19 @@ try {
 
     if ($rawHeadersInput !== '') {
         $payload['raw_headers'] = $rawHeadersInput;
+    }
+
+    // Port scan options
+    $scanPreset = trim((string)($_POST['scan_preset'] ?? 'full'));
+    if ($scanPreset !== '') {
+        $payload['scan_preset'] = $scanPreset;
+    }
+    $customPortsRaw = trim((string)($_POST['custom_ports'] ?? ''));
+    if ($customPortsRaw !== '') {
+        $customPorts = json_decode($customPortsRaw, true);
+        if (is_array($customPorts)) {
+            $payload['custom_ports'] = $customPorts;
+        }
     }
 
     $result = PluginClearsignaldiagPythonBridge::run($payload);
