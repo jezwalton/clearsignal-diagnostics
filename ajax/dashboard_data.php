@@ -49,29 +49,47 @@ try {
         }
 
         // Get latest health report per domain
+        // First get the max id per domain+entity, then fetch those rows
         $latestReports = [];
-        if ($domainList) {
-            $reportRows = $DB->request("
-                SELECT hr.*
-                FROM glpi_plugin_clearsignaldiag_health_reports hr
-                INNER JOIN (
-                    SELECT domain, entities_id, MAX(id) AS max_id
-                    FROM glpi_plugin_clearsignaldiag_health_reports
-                    GROUP BY domain, entities_id
-                ) latest ON hr.id = latest.max_id
-            ");
-            foreach ($reportRows as $row) {
-                $key = (int)$row['entities_id'] . ':' . $row['domain'];
-                $latestReports[$key] = [
-                    'id' => (int)$row['id'],
-                    'status' => (string)$row['status'],
-                    'checks_run' => (int)$row['checks_run'],
-                    'checks_ok' => (int)$row['checks_ok'],
-                    'checks_warn' => (int)$row['checks_warn'],
-                    'checks_fail' => (int)$row['checks_fail'],
-                    'date_creation' => (string)$row['date_creation'],
-                    'users_id' => (int)$row['users_id'],
-                ];
+        $reportTable = 'glpi_plugin_clearsignaldiag_health_reports';
+        if ($domainList && $DB->tableExists($reportTable)) {
+            // Step 1: get max report ID per domain/entity pair
+            $maxRows = $DB->request([
+                'SELECT' => [
+                    'domain',
+                    'entities_id',
+                    new \QueryExpression('MAX(`id`) AS `max_id`'),
+                ],
+                'FROM' => $reportTable,
+                'GROUPBY' => ['domain', 'entities_id'],
+            ]);
+
+            $maxIds = [];
+            foreach ($maxRows as $row) {
+                if ((int)$row['max_id'] > 0) {
+                    $maxIds[] = (int)$row['max_id'];
+                }
+            }
+
+            // Step 2: fetch those reports
+            if ($maxIds) {
+                $reportRows = $DB->request([
+                    'FROM' => $reportTable,
+                    'WHERE' => ['id' => $maxIds],
+                ]);
+                foreach ($reportRows as $row) {
+                    $key = (int)$row['entities_id'] . ':' . $row['domain'];
+                    $latestReports[$key] = [
+                        'id' => (int)$row['id'],
+                        'status' => (string)$row['status'],
+                        'checks_run' => (int)$row['checks_run'],
+                        'checks_ok' => (int)$row['checks_ok'],
+                        'checks_warn' => (int)$row['checks_warn'],
+                        'checks_fail' => (int)$row['checks_fail'],
+                        'date_creation' => (string)$row['date_creation'],
+                        'users_id' => (int)$row['users_id'],
+                    ];
+                }
             }
         }
 

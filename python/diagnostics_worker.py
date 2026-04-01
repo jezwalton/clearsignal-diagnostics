@@ -71,10 +71,21 @@ CLOUDFLARE_NS_SUFFIXES = [".ns.cloudflare.com"]
 
 def _infer_status(summary: str, cause: str) -> str:
     lower = summary.lower()
-    fail_terms = ("fail", "error", "stopped", "not found", "not installed",
-                  "no ", "could not", "missing", "expired")
+
+    # Explicit OK patterns — override everything
+    ok_terms = ("optional", "not enabled", "not configured", "not using",
+                "clean", "all ok", "valid", "active", "supported", "consistent",
+                "resolved", "reachable", "found", "record found", "present")
+    if any(t in lower for t in ok_terms) and not cause:
+        return "ok"
+
+    fail_terms = ("fail", "error", "stopped", "not installed",
+                  "could not", "missing", "expired ", "connection refused",
+                  "verification failed", "timed out", "unreachable",
+                  "permerror", "mismatch detected")
     warn_terms = ("warning", "disagree", "possible", "mismatch", "multiple",
-                  "proxied", "inconsistent", "lame", "expir")
+                  "proxied", "inconsistent", "lame", "expir", "softfail",
+                  "no spf", "no dkim", "no dmarc", "no mx")
     if any(t in lower for t in fail_terms):
         return "fail"
     if any(t in lower for t in warn_terms):
@@ -505,7 +516,7 @@ def check_dnssec_validation(fqdn: str, rdtype: str = "A") -> Dict[str, Any]:
             if has_ds:
                 return ok_check("DNSSEC", "DNSSEC active and validating", details)
             else:
-                return ok_check("DNSSEC", "No DNSSEC (no DS record at parent)", details)
+                return ok_check("DNSSEC", "DNSSEC not enabled — optional", details)
 
         return ok_check("DNSSEC", f"Standard={normal_rcode}; CD={cd_rcode}", details)
     except Exception as exc:
@@ -1156,9 +1167,7 @@ def check_caa_records(domain: str) -> Dict[str, Any]:
                 r["note"] = f"CAA records found on parent domain {parent}"
 
     if not r.get("records"):
-        return ok_check("CAA Records", "No CAA records published", {"domain": domain},
-                        "Any CA can issue certificates for this domain.",
-                        "Consider publishing CAA records to restrict certificate issuance to authorised CAs.")
+        return ok_check("CAA Records", "CAA not configured — optional", {"domain": domain})
 
     # Parse CAA records
     parsed = []
@@ -1792,7 +1801,7 @@ def check_mta_sts(domain: str) -> Dict[str, Any]:
                         "MTA-STS TXT record found but the policy file is not accessible.",
                         f"Publish the policy at {policy_url}")
     else:
-        return ok_check("MTA-STS", "Not configured", details)
+        return ok_check("MTA-STS", "MTA-STS not configured — optional", details)
 
 
 def check_autodiscover(domain: str) -> Dict[str, Any]:
@@ -1847,9 +1856,7 @@ def check_autodiscover(domain: str) -> Dict[str, Any]:
 
     if parts:
         return ok_check("Autodiscover", "Found: " + ", ".join(parts), results)
-    return ok_check("Autodiscover", "No autodiscover/autoconfig found", results,
-                    "No email client autoconfiguration endpoints were detected.",
-                    "Configure Autodiscover (SRV or CNAME) for Outlook, or Autoconfig for Thunderbird.")
+    return ok_check("Autodiscover", "Autodiscover not configured — optional", results)
 
 
 def check_dane_tlsa(domain: str) -> Dict[str, Any]:
@@ -1876,7 +1883,7 @@ def check_dane_tlsa(domain: str) -> Dict[str, Any]:
     has_tlsa = any(r["records"] for r in results)
     if has_tlsa:
         return ok_check("DANE/TLSA", "TLSA records found", {"mx_tlsa": results})
-    return ok_check("DANE/TLSA", "No TLSA records (DANE not configured)", {"mx_tlsa": results})
+    return ok_check("DANE/TLSA", "DANE not configured — optional", {"mx_tlsa": results})
 
 
 def check_bimi(domain: str) -> Dict[str, Any]:
@@ -1896,7 +1903,7 @@ def check_bimi(domain: str) -> Dict[str, Any]:
                 authority = p[2:]
         return ok_check("BIMI", "BIMI record found",
                         {"record": record, "logo_url": logo, "authority_url": authority})
-    return ok_check("BIMI", "No BIMI record", {"txt": txt})
+    return ok_check("BIMI", "BIMI not configured — optional", {"txt": txt})
 
 
 # ---------------------------------------------------------------------------

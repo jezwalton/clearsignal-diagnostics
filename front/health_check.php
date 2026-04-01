@@ -456,6 +456,29 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     this.disabled = false;
   });
 
+  // ---- Auto-populate from URL params (from dashboard) ----
+  const urlParams = new URLSearchParams(window.location.search);
+  const preEntityId = urlParams.get('entities_id');
+  const preDomain = urlParams.get('domain');
+  const preEntityName = urlParams.get('entity_name');
+
+  if (preEntityId && preEntityName) {
+    // Entity mode — pre-select entity
+    currentEntityId = parseInt(preEntityId);
+    currentEntityName = decodeURIComponent(preEntityName);
+    document.getElementById('hc-entity-name').textContent = currentEntityName;
+    document.getElementById('hc-entity-id').value = currentEntityId;
+    document.getElementById('hc-selected-entity').style.display = 'block';
+    searchInput.value = currentEntityName;
+    loadDomains();
+    loadHistory();
+  } else if (preDomain) {
+    // Quick mode — switch tab and pre-fill domain
+    const quickTab = document.querySelector('[href="#hc-quick-mode"]');
+    if (quickTab) quickTab.click();
+    document.getElementById('hc-quick-domain').value = decodeURIComponent(preDomain);
+  }
+
 })();
 </script>
 

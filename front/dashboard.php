@@ -45,6 +45,7 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     <div class="d-flex gap-2">
       <input type="text" id="db-search" class="form-control form-control-sm" placeholder="Search client or domain..." style="width:250px;">
       <button class="btn btn-sm btn-primary" id="db-refresh"><i class="ti ti-refresh me-1"></i>Refresh</button>
+      <button class="btn btn-sm btn-success" id="db-scan-all" disabled><i class="ti ti-heart-rate-monitor me-1"></i>Scan All Now</button>
     </div>
   </div>
 </div>
@@ -55,6 +56,20 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     <div class="spinner-border text-primary me-2" role="status"></div>
     <span>Loading fleet data&hellip;</span>
   </div></div>
+</div>
+
+<!-- Scan progress -->
+<div id="db-scan-progress" class="card mb-3" style="display:none;">
+  <div class="card-body py-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <span id="db-scan-text" class="fw-bold">Scanning...</span>
+      <span id="db-scan-counter" class="small text-muted"></span>
+    </div>
+    <div class="progress" style="height:6px;">
+      <div class="progress-bar progress-bar-striped progress-bar-animated" id="db-scan-bar" style="width:0%"></div>
+    </div>
+    <div id="db-scan-errors" class="mt-2"></div>
+  </div>
 </div>
 
 <!-- Fleet table -->
@@ -134,6 +149,8 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
       renderTable();
       document.getElementById('db-loading').style.display = 'none';
       document.getElementById('db-table-card').style.display = 'block';
+      document.getElementById('db-scan-all').disabled = false;
+      document.getElementById('db-scan-progress').style.display = 'none';
     })
     .catch(err=>{
       document.getElementById('db-loading').innerHTML = '<div class="alert alert-danger">'+esc(err.message)+'</div>';
@@ -196,7 +213,7 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
       html += '<td class="text-danger">'+(r?r.checks_fail:'—')+'</td>';
       html += '<td class="small">'+esc(date)+'</td>';
       html += '<td>'+ageBadge(d.days_since_check, d.never_checked)+'</td>';
-      html += '<td><a href="'+PLUGIN_ROOT+'/front/health_check.php" class="btn btn-sm btn-outline-primary" title="Run health check"><i class="ti ti-player-play"></i></a></td>';
+      html += '<td><a href="'+PLUGIN_ROOT+'/front/health_check.php?entities_id='+d.entities_id+'&domain='+encodeURIComponent(d.domain)+'&entity_name='+encodeURIComponent(d.entity_name)+'" class="btn btn-sm btn-outline-primary" title="Run health check for '+esc(d.domain)+'"><i class="ti ti-player-play"></i></a></td>';
       html += '</tr>';
     }
     tbody.innerHTML = html;
@@ -231,6 +248,101 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
 
   // Refresh
   document.getElementById('db-refresh').addEventListener('click', loadFleet);
+
+  // Scan All
+  const scanAllBtn = document.getElementById('db-scan-all');
+  const scanProgress = document.getElementById('db-scan-progress');
+  const scanText = document.getElementById('db-scan-text');
+  const scanCounter = document.getElementById('db-scan-counter');
+  const scanBar = document.getElementById('db-scan-bar');
+  const scanErrors = document.getElementById('db-scan-errors');
+
+  scanAllBtn.addEventListener('click', async function() {
+    const filtered = filterData();
+    if (!filtered.length) return;
+
+    if (!confirm('This will run a full health check on ' + filtered.length + ' domain(s). This may take several minutes. Continue?')) return;
+
+    scanAllBtn.disabled = true;
+    scanProgress.style.display = 'block';
+    scanErrors.innerHTML = '';
+    let completed = 0;
+    let errors = 0;
+    const total = filtered.length;
+    const CONCURRENCY = 1; // Sequential to avoid exhausting PHP-FPM workers
+
+    function updateProgress(currentDomains) {
+      const pct = Math.round((completed / total) * 100);
+      scanText.textContent = 'Scanning: ' + currentDomains.join(', ');
+      scanCounter.textContent = completed + ' / ' + total + (errors > 0 ? ' (' + errors + ' error' + (errors>1?'s':'') + ')' : '');
+      scanBar.style.width = pct + '%';
+    }
+
+    async function scanOne(item) {
+      try {
+        const data = new FormData();
+        data.append('domain', item.domain);
+        data.append('entities_id', item.entities_id);
+        data.append('store_result', '1');
+        data.append('dkim_selector', 'selector1');
+
+        const r = await fetch(PLUGIN_ROOT + '/ajax/health_check.php', {
+          method: 'POST', body: data, credentials: 'same-origin',
+          headers: {'X-Requested-With':'XMLHttpRequest','X-Glpi-Csrf-Token':getCsrfToken()}
+        });
+
+        const ct = r.headers.get('content-type') || '';
+        if (!ct.includes('json')) {
+          throw new Error('Non-JSON response (HTTP ' + r.status + ') — possible session/CSRF timeout');
+        }
+
+        const resp = await r.json();
+        if (!resp.success) throw new Error(resp.message);
+      } catch (err) {
+        errors++;
+        scanErrors.innerHTML += '<div class="small text-danger"><code>' + esc(item.domain) + '</code>: ' + esc(err.message) + '</div>';
+      }
+      completed++;
+    }
+
+    async function refreshFleetData() {
+      try {
+        const resp = await fetch(PLUGIN_ROOT+'/ajax/dashboard_data.php?action=fleet_overview', {
+          credentials: 'same-origin',
+          headers: {'X-Requested-With':'XMLHttpRequest','X-Glpi-Csrf-Token':getCsrfToken()}
+        }).then(r=>r.json());
+        if (resp.success) {
+          fleetData = resp.fleet;
+          const s = resp.summary;
+          document.getElementById('db-total').textContent = s.total_domains;
+          document.getElementById('db-entities').textContent = s.total_entities;
+          document.getElementById('db-ok').textContent = s.ok;
+          document.getElementById('db-warn').textContent = s.warn;
+          document.getElementById('db-fail').textContent = s.fail;
+          document.getElementById('db-stale').textContent = s.stale;
+          document.getElementById('db-never').textContent = s.never_checked;
+          renderTable();
+        }
+      } catch(e) {}
+    }
+
+    // Process in batches of CONCURRENCY, refresh table after each batch
+    const queue = [...filtered];
+    while (queue.length > 0) {
+      const batch = queue.splice(0, CONCURRENCY);
+      updateProgress(batch.map(b => b.domain));
+      await Promise.all(batch.map(item => scanOne(item)));
+      await refreshFleetData();
+    }
+
+    scanText.textContent = 'Scan complete — ' + total + ' domains, ' + errors + ' error' + (errors!==1?'s':'');
+    scanBar.style.width = '100%';
+    scanBar.classList.remove('progress-bar-animated');
+    scanAllBtn.disabled = false;
+
+    // Final refresh
+    setTimeout(loadFleet, 1000);
+  });
 
   // Initial load
   loadFleet();
