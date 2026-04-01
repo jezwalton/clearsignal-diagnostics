@@ -42,6 +42,8 @@ PUBLIC_RESOLVERS = {
     "Google":        "8.8.8.8",
     "Quad9":         "9.9.9.9",
     "OpenDNS":       "208.67.222.222",
+    "SFIT DNS1":     "46.30.136.19",
+    "SFIT DNS2":     "46.30.136.18",
 }
 
 # All common record types to scan
@@ -827,6 +829,422 @@ def check_website(url_or_host: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Website / SSL diagnostic (standalone tool checks)
+# ---------------------------------------------------------------------------
+
+def check_tls_certificate(host: str) -> Dict[str, Any]:
+    """Full TLS certificate analysis including chain, protocol, cipher."""
+    details: Dict[str, Any] = {"host": host}
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, 443), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert()
+                details["tls_version"] = ssock.version()
+                details["cipher"] = ssock.cipher()
+
+                # Subject
+                subject_cn = ""
+                subject_org = ""
+                for field in cert.get("subject", ()):
+                    for k, v in field:
+                        if k == "commonName":
+                            subject_cn = v
+                        elif k == "organizationName":
+                            subject_org = v
+
+                # Issuer
+                issuer_cn = ""
+                issuer_org = ""
+                for field in cert.get("issuer", ()):
+                    for k, v in field:
+                        if k == "commonName":
+                            issuer_cn = v
+                        elif k == "organizationName":
+                            issuer_org = v
+
+                # SANs
+                san_list = []
+                for san_type, san_val in cert.get("subjectAltName", ()):
+                    if san_type == "DNS":
+                        san_list.append(san_val)
+
+                # Dates
+                not_before = cert.get("notBefore", "")
+                not_after = cert.get("notAfter", "")
+                issued_str = ""
+                expiry_str = ""
+                days_remaining = None
+                try:
+                    if not_before:
+                        issued = time.strptime(not_before, "%b %d %H:%M:%S %Y %Z")
+                        issued_str = time.strftime("%Y-%m-%d", issued)
+                    if not_after:
+                        expiry = time.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
+                        expiry_ts = time.mktime(expiry)
+                        days_remaining = int((expiry_ts - time.time()) / 86400)
+                        expiry_str = time.strftime("%Y-%m-%d", expiry)
+                except Exception:
+                    pass
+
+                # Serial number
+                serial = cert.get("serialNumber", "")
+
+                details.update({
+                    "subject_cn": subject_cn,
+                    "subject_org": subject_org,
+                    "issuer_cn": issuer_cn,
+                    "issuer_org": issuer_org,
+                    "serial": serial,
+                    "issued": issued_str,
+                    "expires": expiry_str,
+                    "days_remaining": days_remaining,
+                    "san": san_list,
+                    "san_count": len(san_list),
+                })
+
+                # Determine certificate type
+                cert_type = "DV"
+                if subject_org:
+                    cert_type = "OV/EV"
+                if issuer_org and "let's encrypt" in issuer_org.lower():
+                    cert_type = "DV (Let's Encrypt)"
+                elif issuer_org and "cloudflare" in issuer_org.lower():
+                    cert_type = "DV (Cloudflare)"
+                details["cert_type"] = cert_type
+
+                # Check hostname match
+                hostname_match = subject_cn == host or host in san_list or \
+                    any(san.startswith("*.") and host.endswith(san[1:]) for san in san_list)
+                details["hostname_match"] = hostname_match
+
+                # Summary
+                cause = ""
+                fix = ""
+                if days_remaining is not None and days_remaining < 0:
+                    summary = f"EXPIRED {abs(days_remaining)} days ago"
+                    cause = "Certificate has expired."
+                    fix = "Renew the certificate immediately."
+                elif days_remaining is not None and days_remaining < 14:
+                    summary = f"Expires in {days_remaining} days — {issuer_org or issuer_cn}"
+                    cause = f"Certificate expires in {days_remaining} days."
+                    fix = "Renew the certificate urgently."
+                elif days_remaining is not None and days_remaining < 30:
+                    summary = f"Expires in {days_remaining} days — {issuer_org or issuer_cn}"
+                    cause = f"Certificate expires soon ({days_remaining} days)."
+                    fix = "Schedule certificate renewal."
+                elif not hostname_match:
+                    summary = f"Hostname mismatch — cert CN: {subject_cn}"
+                    cause = f"Certificate CN ({subject_cn}) does not match the requested host ({host})."
+                    fix = "Reissue the certificate with the correct hostname or add it as a SAN."
+                else:
+                    summary = f"Valid — {cert_type} — expires {expiry_str} ({days_remaining}d) — {issuer_org or issuer_cn}"
+
+                return ok_check("TLS Certificate", summary, details, cause, fix)
+    except ssl.SSLCertVerificationError as exc:
+        details["error"] = str(exc)
+        return ok_check("TLS Certificate", "Certificate verification failed", details,
+                        str(exc), "Check the certificate chain, expiry, and hostname match.")
+    except ssl.SSLError as exc:
+        details["error"] = str(exc)
+        return ok_check("TLS Certificate", "SSL/TLS error", details,
+                        str(exc), "Check TLS configuration and supported protocols on the server.")
+    except socket.timeout:
+        return ok_check("TLS Certificate", "Connection timed out on port 443", details,
+                        "Could not establish a TLS connection.", "Check firewall rules and that port 443 is open.")
+    except ConnectionRefusedError:
+        return ok_check("TLS Certificate", "Connection refused on port 443", details,
+                        "Port 443 is not accepting connections.", "Ensure HTTPS is enabled on the server.")
+    except Exception as exc:
+        details["error"] = str(exc)
+        return ok_check("TLS Certificate", "TLS check failed", details,
+                        str(exc), "Investigate the TLS/SSL configuration.")
+
+
+def check_security_headers(url_or_host: str) -> Dict[str, Any]:
+    """Check HTTP security headers."""
+    url = url_or_host if url_or_host.startswith(("http://", "https://")) else f"https://{url_or_host}"
+    try:
+        resp = requests.get(url, timeout=10, allow_redirects=True)
+        headers = {k.lower(): v for k, v in resp.headers.items()}
+
+        checks = {
+            "Strict-Transport-Security": {
+                "present": "strict-transport-security" in headers,
+                "value": headers.get("strict-transport-security", ""),
+                "description": "HSTS — forces HTTPS connections",
+                "recommendation": "Add: Strict-Transport-Security: max-age=31536000; includeSubDomains",
+            },
+            "Content-Security-Policy": {
+                "present": "content-security-policy" in headers,
+                "value": headers.get("content-security-policy", "")[:200],  # truncate long CSP
+                "description": "CSP — controls resource loading",
+                "recommendation": "Define a Content-Security-Policy appropriate for the site",
+            },
+            "X-Frame-Options": {
+                "present": "x-frame-options" in headers,
+                "value": headers.get("x-frame-options", ""),
+                "description": "Clickjacking protection",
+                "recommendation": "Add: X-Frame-Options: SAMEORIGIN",
+            },
+            "X-Content-Type-Options": {
+                "present": "x-content-type-options" in headers,
+                "value": headers.get("x-content-type-options", ""),
+                "description": "Prevents MIME-type sniffing",
+                "recommendation": "Add: X-Content-Type-Options: nosniff",
+            },
+            "Referrer-Policy": {
+                "present": "referrer-policy" in headers,
+                "value": headers.get("referrer-policy", ""),
+                "description": "Controls referrer information",
+                "recommendation": "Add: Referrer-Policy: strict-origin-when-cross-origin",
+            },
+            "Permissions-Policy": {
+                "present": "permissions-policy" in headers,
+                "value": headers.get("permissions-policy", "")[:200],
+                "description": "Controls browser feature access",
+                "recommendation": "Add a Permissions-Policy header to restrict browser features",
+            },
+            "X-XSS-Protection": {
+                "present": "x-xss-protection" in headers,
+                "value": headers.get("x-xss-protection", ""),
+                "description": "Legacy XSS filter (CSP is preferred)",
+                "recommendation": "CSP is the modern replacement; this header is optional",
+            },
+        }
+
+        present_count = sum(1 for c in checks.values() if c["present"])
+        total = len(checks)
+        missing = [name for name, c in checks.items() if not c["present"]]
+
+        # Also capture server header and technology hints
+        server = headers.get("server", "")
+        powered_by = headers.get("x-powered-by", "")
+
+        details = {
+            "url_tested": resp.url,
+            "headers": checks,
+            "present_count": present_count,
+            "total": total,
+            "missing": missing,
+            "server": server,
+            "x_powered_by": powered_by,
+        }
+
+        cause = ""
+        fix = ""
+        if present_count < 3:
+            cause = f"Only {present_count}/{total} security headers present."
+            fix = "Add missing security headers to the web server or Cloudflare configuration."
+
+        return ok_check("Security Headers", f"{present_count}/{total} headers present", details, cause, fix)
+    except Exception as exc:
+        return ok_check("Security Headers", "Could not check headers", {"error": str(exc)},
+                        "The site was unreachable.", "Ensure the site is accessible.")
+
+
+def check_http_response(url_or_host: str) -> Dict[str, Any]:
+    """Detailed HTTP response analysis — status, redirects, timing, server info."""
+    url = url_or_host if url_or_host.startswith(("http://", "https://")) else f"https://{url_or_host}"
+    details: Dict[str, Any] = {"url_tested": url}
+
+    try:
+        # Test HTTPS
+        start = time.perf_counter()
+        resp = requests.get(url, timeout=10, allow_redirects=True)
+        elapsed = round((time.perf_counter() - start) * 1000, 1)
+
+        redirect_chain = []
+        for r in resp.history:
+            redirect_chain.append({
+                "url": r.url,
+                "status": r.status_code,
+                "location": r.headers.get("Location", ""),
+            })
+
+        details.update({
+            "final_url": resp.url,
+            "status_code": resp.status_code,
+            "reason": resp.reason,
+            "response_time_ms": elapsed,
+            "redirect_chain": redirect_chain,
+            "redirect_count": len(redirect_chain),
+            "server": resp.headers.get("Server", ""),
+            "content_type": resp.headers.get("Content-Type", ""),
+            "content_length": resp.headers.get("Content-Length", ""),
+            "x_powered_by": resp.headers.get("X-Powered-By", ""),
+        })
+
+        # Check if Cloudflare
+        cf_ray = resp.headers.get("CF-RAY", "")
+        cf_cache = resp.headers.get("CF-Cache-Status", "")
+        details["cloudflare"] = {
+            "is_cloudflare": bool(cf_ray),
+            "cf_ray": cf_ray,
+            "cf_cache_status": cf_cache,
+        }
+
+        # Test HTTP → HTTPS redirect
+        if url.startswith("https://"):
+            http_url = url.replace("https://", "http://", 1)
+            try:
+                http_resp = requests.get(http_url, timeout=5, allow_redirects=False)
+                http_redirects_to_https = (
+                    http_resp.status_code in (301, 302, 307, 308)
+                    and http_resp.headers.get("Location", "").startswith("https://")
+                )
+                details["http_to_https_redirect"] = {
+                    "tested": http_url,
+                    "status": http_resp.status_code,
+                    "redirects_to_https": http_redirects_to_https,
+                    "location": http_resp.headers.get("Location", ""),
+                }
+            except Exception:
+                details["http_to_https_redirect"] = {"tested": http_url, "error": "Could not connect on HTTP"}
+
+        summary = f"HTTP {resp.status_code} — {elapsed}ms"
+        if redirect_chain:
+            summary += f" ({len(redirect_chain)} redirect(s))"
+        if cf_ray:
+            summary += " — via Cloudflare"
+
+        return ok_check("HTTP Response", summary, details,
+                        "" if resp.ok else f"Non-success status: {resp.status_code}",
+                        "" if resp.ok else "Review server configuration, origin, and proxy settings.")
+    except Exception as exc:
+        details["error"] = str(exc)
+        return ok_check("HTTP Response", "Connection failed", details,
+                        str(exc), "Check DNS, firewall, and server availability.")
+
+
+def check_http2_support(host: str) -> Dict[str, Any]:
+    """Check HTTP/2 (and ALPN) support."""
+    details: Dict[str, Any] = {"host": host}
+    try:
+        ctx = ssl.create_default_context()
+        ctx.set_alpn_protocols(["h2", "http/1.1"])
+        with socket.create_connection((host, 443), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                protocol = ssock.selected_alpn_protocol()
+                details["alpn_negotiated"] = protocol
+                details["supports_h2"] = protocol == "h2"
+
+                if protocol == "h2":
+                    return ok_check("HTTP/2 Support", "HTTP/2 supported (h2 via ALPN)", details)
+                else:
+                    return ok_check("HTTP/2 Support", f"HTTP/1.1 only (ALPN: {protocol or 'none'})", details,
+                                    "Server does not support HTTP/2.",
+                                    "Enable HTTP/2 on the web server or Cloudflare proxy.")
+    except Exception as exc:
+        details["error"] = str(exc)
+        return ok_check("HTTP/2 Support", "Could not test HTTP/2", details)
+
+
+def check_caa_records(domain: str) -> Dict[str, Any]:
+    """Check CAA (Certificate Authority Authorization) records."""
+    r = resolve_records(domain, "CAA")
+    if not r.get("records"):
+        # Try parent domain
+        parent = extract_domain(domain)
+        if parent != domain:
+            r = resolve_records(parent, "CAA")
+            if r.get("records"):
+                r["note"] = f"CAA records found on parent domain {parent}"
+
+    if not r.get("records"):
+        return ok_check("CAA Records", "No CAA records published", {"domain": domain},
+                        "Any CA can issue certificates for this domain.",
+                        "Consider publishing CAA records to restrict certificate issuance to authorised CAs.")
+
+    # Parse CAA records
+    parsed = []
+    for rec in r["records"]:
+        parts = rec.split(None, 2)
+        if len(parts) >= 3:
+            flags = parts[0]
+            tag = parts[1]
+            value = parts[2].strip('"')
+            parsed.append({"flags": flags, "tag": tag, "value": value})
+
+    issue_cas = [p["value"] for p in parsed if p["tag"] == "issue"]
+    wildcard_cas = [p["value"] for p in parsed if p["tag"] == "issuewild"]
+    iodef = [p["value"] for p in parsed if p["tag"] == "iodef"]
+
+    details = {
+        "records": parsed,
+        "issue_cas": issue_cas,
+        "wildcard_cas": wildcard_cas,
+        "iodef": iodef,
+        "note": r.get("note", ""),
+    }
+
+    summary = f"{len(issue_cas)} CA(s) authorised"
+    if wildcard_cas:
+        summary += f", {len(wildcard_cas)} wildcard CA(s)"
+    if iodef:
+        summary += ", violation reporting configured"
+
+    return ok_check("CAA Records", summary, details)
+
+
+def check_cf_ssl_mode(host: str) -> Dict[str, Any]:
+    """Detect Cloudflare SSL/TLS mode by comparing direct origin vs proxied response."""
+    details: Dict[str, Any] = {"host": host}
+
+    # First check if the site is behind Cloudflare
+    ips = resolve_records(host, "A").get("records", [])
+    cf_proxied = any(is_cloudflare_ip(ip) for ip in ips)
+    details["cloudflare_proxied"] = cf_proxied
+
+    if not cf_proxied:
+        return ok_check("Cloudflare SSL Mode", "Not behind Cloudflare proxy", details)
+
+    # Test HTTPS
+    try:
+        resp = requests.get(f"https://{host}", timeout=10, allow_redirects=True)
+        details["https_status"] = resp.status_code
+        details["https_works"] = resp.ok
+        cf_ray = resp.headers.get("CF-RAY", "")
+        details["cf_ray"] = cf_ray
+    except Exception as exc:
+        details["https_error"] = str(exc)
+        details["https_works"] = False
+
+    # Test HTTP to see if it redirects to HTTPS
+    try:
+        http_resp = requests.get(f"http://{host}", timeout=5, allow_redirects=False)
+        details["http_status"] = http_resp.status_code
+        details["http_redirects_to_https"] = (
+            http_resp.status_code in (301, 302, 307, 308)
+            and http_resp.headers.get("Location", "").startswith("https://")
+        )
+    except Exception:
+        details["http_status"] = None
+
+    # Infer mode
+    if details.get("https_works"):
+        if details.get("http_redirects_to_https"):
+            mode = "Full or Full (Strict) — HTTPS enforced"
+        else:
+            mode = "Flexible or Full — HTTPS works but HTTP not redirected"
+    else:
+        mode = "Off or misconfigured — HTTPS not working"
+
+    details["inferred_mode"] = mode
+
+    cause = ""
+    fix = ""
+    if not details.get("https_works"):
+        cause = "HTTPS is not working through Cloudflare."
+        fix = "Check Cloudflare SSL/TLS mode and ensure the origin server has a valid certificate."
+    elif not details.get("http_redirects_to_https"):
+        cause = "HTTP is not redirecting to HTTPS."
+        fix = "Enable 'Always Use HTTPS' in Cloudflare or add a redirect rule."
+
+    return ok_check("Cloudflare SSL Mode", mode, details, cause, fix)
+
+
+# ---------------------------------------------------------------------------
 # Domain WHOIS (lightweight — expiry only)
 # ---------------------------------------------------------------------------
 
@@ -1289,6 +1707,19 @@ def run_checks(payload: Dict[str, Any]) -> Dict[str, Any]:
             output.append(check_dane_tlsa(domain))
         elif check == "bimi" and domain:
             output.append(check_bimi(domain))
+        # Website/SSL diagnostic checks
+        elif check == "tls_certificate" and host:
+            output.append(check_tls_certificate(host))
+        elif check == "security_headers" and (url or host):
+            output.append(check_security_headers(url or host))
+        elif check == "http_response" and (url or host):
+            output.append(check_http_response(url or host))
+        elif check == "http2_support" and host:
+            output.append(check_http2_support(host))
+        elif check == "caa_records" and domain:
+            output.append(check_caa_records(domain))
+        elif check == "cf_ssl_mode" and host:
+            output.append(check_cf_ssl_mode(host))
 
     statuses = [c.get("status", "ok") for c in output]
     if "fail" in statuses:

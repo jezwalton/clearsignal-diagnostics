@@ -3,11 +3,17 @@ include('../../../inc/includes.php');
 
 Session::checkLoginUser();
 
-Html::header(__('DNS Diagnostic'), $_SERVER['PHP_SELF'], 'tools', 'PluginClearsignaldiagMenu');
+Html::header(__('DNS Diagnostic'), $_SERVER['PHP_SELF'], 'tools', 'pluginclearsignaldiagmenu', 'dns');
 
 $config = PluginClearsignaldiagConfig::getConfig();
 $pluginRoot = Plugin::getWebDir('clearsignaldiag');
 ?>
+
+<ul class="nav nav-pills mb-3">
+  <li class="nav-item"><a class="nav-link active" href="<?php echo htmlspecialchars($pluginRoot . '/front/diagnostic.php', ENT_QUOTES, 'UTF-8'); ?>"><i class="ti ti-world-search me-1"></i>DNS Diagnostic</a></li>
+  <li class="nav-item"><a class="nav-link" href="<?php echo htmlspecialchars($pluginRoot . '/front/email_diagnostic.php', ENT_QUOTES, 'UTF-8'); ?>"><i class="ti ti-mail-check me-1"></i>Email Diagnostic</a></li>
+  <li class="nav-item"><a class="nav-link" href="<?php echo htmlspecialchars($pluginRoot . '/front/website_diagnostic.php', ENT_QUOTES, 'UTF-8'); ?>"><i class="ti ti-lock-check me-1"></i>Website / SSL</a></li>
+</ul>
 
 <div class="card mb-3" id="csd-panel">
   <div class="card-header d-flex justify-content-between align-items-center">

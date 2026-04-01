@@ -12,10 +12,14 @@ function plugin_init_clearsignaldiag(): void {
         'addtabon' => [Ticket::class]
     ]);
     Plugin::registerClass(PluginClearsignaldiagMenu::class);
+    Plugin::registerClass(PluginClearsignaldiagEmailmenu::class);
+    Plugin::registerClass(PluginClearsignaldiagWebsitemenu::class);
 
-    // Add menu entry under Tools
+    // Add menu entries under Tools
     if (Session::haveRight('ticket', READ)) {
-        $PLUGIN_HOOKS['menu_toadd']['clearsignaldiag'] = ['tools' => 'PluginClearsignaldiagMenu'];
+        $PLUGIN_HOOKS['menu_toadd']['clearsignaldiag'] = [
+            'tools' => ['PluginClearsignaldiagMenu', 'PluginClearsignaldiagEmailmenu', 'PluginClearsignaldiagWebsitemenu']
+        ];
     }
 
     // Ensure hook functions are loadable for install/uninstall

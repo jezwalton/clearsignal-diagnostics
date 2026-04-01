@@ -37,6 +37,9 @@ try {
         // Email diagnostic checks
         'smtp_connectivity', 'blacklist_check', 'mta_sts',
         'autodiscover', 'dane_tlsa', 'bimi',
+        // Website/SSL diagnostic checks
+        'tls_certificate', 'security_headers', 'http_response',
+        'http2_support', 'caa_records', 'cf_ssl_mode',
     ];
     $cleanChecks = array_values(array_intersect($allowedChecks, $checks));
     if (count($cleanChecks) === 0) {
