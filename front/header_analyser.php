@@ -3,7 +3,7 @@ include('../../../inc/includes.php');
 
 Session::checkLoginUser();
 
-Html::header(__('Email Header Analyser'), $_SERVER['PHP_SELF'], 'tools', 'pluginclearsignaldiagmenu', 'headers');
+Html::header(__('Email Analyser'), $_SERVER['PHP_SELF'], 'tools', 'pluginclearsignaldiagmenu', 'headers');
 
 $config = PluginClearsignaldiagConfig::getConfig();
 $pluginRoot = Plugin::getWebDir('clearsignaldiag');
@@ -12,13 +12,13 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
 <ul class="nav nav-pills mb-3">
   <li class="nav-item"><a class="nav-link" href="<?php echo htmlspecialchars($pluginRoot . '/front/diagnostic.php', ENT_QUOTES, 'UTF-8'); ?>"><i class="ti ti-world-search me-1"></i>DNS Diagnostic</a></li>
   <li class="nav-item"><a class="nav-link" href="<?php echo htmlspecialchars($pluginRoot . '/front/email_diagnostic.php', ENT_QUOTES, 'UTF-8'); ?>"><i class="ti ti-mail-check me-1"></i>Email Diagnostic</a></li>
+  <li class="nav-item"><a class="nav-link active" href="<?php echo htmlspecialchars($pluginRoot . '/front/header_analyser.php', ENT_QUOTES, 'UTF-8'); ?>"><i class="ti ti-mail-code me-1"></i>Email Analyser</a></li>
   <li class="nav-item"><a class="nav-link" href="<?php echo htmlspecialchars($pluginRoot . '/front/website_diagnostic.php', ENT_QUOTES, 'UTF-8'); ?>"><i class="ti ti-lock-check me-1"></i>Website / SSL</a></li>
-  <li class="nav-item"><a class="nav-link active" href="<?php echo htmlspecialchars($pluginRoot . '/front/header_analyser.php', ENT_QUOTES, 'UTF-8'); ?>"><i class="ti ti-mail-code me-1"></i>Header Analyser</a></li>
 </ul>
 
 <div class="card mb-3">
   <div class="card-header d-flex justify-content-between align-items-center">
-    <h3 class="card-title mb-0"><i class="ti ti-mail-code me-1"></i>Email Header Analyser</h3>
+    <h3 class="card-title mb-0"><i class="ti ti-mail-code me-1"></i>Email Analyser</h3>
     <span class="badge bg-secondary" id="csd-badge" style="display:none;"></span>
   </div>
   <div class="card-body">
@@ -141,6 +141,12 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     }
     html += '</div>';
 
+    if (d.detected_services && d.detected_services.length) {
+      html += '<div class="alert alert-info mt-2 mb-0 py-1 px-2 small"><i class="ti ti-info-circle me-1"></i><strong>Relayed via:</strong> '+d.detected_services.map(s=>'<span class="badge bg-info text-dark me-1">'+esc(s.service)+'</span>').join('')+'</div>';
+    }
+    if (d.info_notes && d.info_notes.length) {
+      html += '<div class="alert alert-light border mt-2 mb-0 py-1 px-2 small">'+d.info_notes.map(n=>'<div>'+esc(n)+'</div>').join('')+'</div>';
+    }
     if (d.issues && d.issues.length) {
       html += '<div class="alert alert-danger mt-2 mb-0 py-1 px-2 small"><strong>Issues:</strong> '+d.issues.map(i=>esc(i)).join(', ')+'</div>';
     }

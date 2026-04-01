@@ -1252,6 +1252,42 @@ def check_cf_ssl_mode(host: str) -> Dict[str, Any]:
 # Email header analysis
 # ---------------------------------------------------------------------------
 
+# Known mail relay/filtering services — SPF results through these are expected
+KNOWN_MAIL_SERVICES = [
+    # Service name, domain patterns to match in headers/DKIM
+    ("CyMail", ["cymail.io", "smtp.cymail.io"]),
+    ("Microsoft 365", ["protection.outlook.com", "outlook.com", "microsoft.com"]),
+    ("Google Workspace", ["google.com", "googlemail.com"]),
+    ("Mimecast", ["mimecast.com"]),
+    ("Proofpoint", ["proofpoint.com", "pphosted.com"]),
+    ("Barracuda", ["barracudanetworks.com", "bsn.barracuda.com"]),
+    ("Sophos", ["sophos.com"]),
+    ("SpamExperts", ["spamexperts.com", "antispamcloud.com"]),
+    ("Mailgun", ["mailgun.org", "mailgun.com"]),
+    ("SendGrid", ["sendgrid.net"]),
+    ("Amazon SES", ["amazonses.com"]),
+    ("Postmark", ["postmarkapp.com"]),
+]
+
+
+def _detect_mail_services(hops: list, dkim_details: dict, all_headers: str) -> List[Dict[str, str]]:
+    """Detect known mail relay/filtering services from headers."""
+    detected: List[Dict[str, str]] = []
+    seen: set = set()
+    search_text = all_headers.lower()
+
+    for service_name, patterns in KNOWN_MAIL_SERVICES:
+        if service_name in seen:
+            continue
+        for pattern in patterns:
+            if pattern.lower() in search_text:
+                detected.append({"service": service_name, "matched": pattern})
+                seen.add(service_name)
+                break
+
+    return detected
+
+
 def _parse_received_header(header: str) -> Dict[str, Any]:
     """Parse a single Received: header into structured fields."""
     result: Dict[str, Any] = {"raw": header.strip()}
@@ -1400,22 +1436,51 @@ def analyse_email_headers(raw_headers: str) -> Dict[str, Any]:
         if val:
             spam_headers[key] = val.strip()
 
+    # ---- Detect known mail services ----
+    detected_services = _detect_mail_services(hops, dkim_details, raw_headers)
+    service_names = [s["service"] for s in detected_services]
+    has_known_relay = len(detected_services) > 0
+
     # ---- Determine issues ----
     issues: List[str] = []
     warnings: List[str] = []
+    info_notes: List[str] = []
 
-    if auth_summary.get("spf") in ("fail", "softfail", "permerror", "temperror"):
-        issues.append(f"SPF {auth_summary['spf']}")
-    elif auth_summary.get("spf") == "none":
+    if detected_services:
+        info_notes.append("Known service(s): " + ", ".join(service_names))
+
+    # SPF — downgrade severity if a known relay is involved
+    spf_val = auth_summary.get("spf", "")
+    if spf_val in ("fail", "softfail", "permerror", "temperror"):
+        if has_known_relay and spf_val in ("fail", "softfail"):
+            info_notes.append(f"SPF {spf_val} — expected when relayed via {', '.join(service_names)}")
+        else:
+            issues.append(f"SPF {spf_val}")
+    elif spf_val == "none":
         warnings.append("No SPF result")
 
-    if auth_summary.get("dkim") in ("fail", "permerror", "temperror"):
-        issues.append(f"DKIM {auth_summary['dkim']}")
-    elif auth_summary.get("dkim") == "none":
-        warnings.append("No DKIM result")
+    # DKIM — if the signing domain is a known relay, that's normal
+    dkim_val = auth_summary.get("dkim", "")
+    dkim_domain = dkim_details.get("d", "").strip()
+    dkim_is_relay = any(
+        pattern.lower() in dkim_domain.lower()
+        for _, patterns in KNOWN_MAIL_SERVICES
+        for pattern in patterns
+    ) if dkim_domain else False
 
+    if dkim_val in ("fail", "permerror", "temperror"):
+        issues.append(f"DKIM {dkim_val}")
+    elif dkim_val == "none":
+        warnings.append("No DKIM result")
+    elif dkim_val == "pass" and dkim_is_relay and dkim_domain:
+        info_notes.append(f"DKIM signed by relay ({dkim_domain}) — normal for this service")
+
+    # DMARC
     if auth_summary.get("dmarc") in ("fail",):
-        issues.append(f"DMARC {auth_summary['dmarc']}")
+        if has_known_relay:
+            warnings.append(f"DMARC {auth_summary['dmarc']} — may be expected via relay")
+        else:
+            issues.append(f"DMARC {auth_summary['dmarc']}")
     elif auth_summary.get("dmarc") == "none":
         warnings.append("No DMARC result")
 
@@ -1447,12 +1512,16 @@ def analyse_email_headers(raw_headers: str) -> Dict[str, Any]:
     summary_parts.append(f"{len(hops)} hop(s)")
     if total_delay_seconds > 0:
         summary_parts.append(f"{int(total_delay_seconds)}s total transit")
+    if detected_services:
+        summary_parts.append("via " + ", ".join(service_names))
 
     return {
         "status": status,
         "summary": " | ".join(summary_parts),
         "issues": issues,
         "warnings": warnings,
+        "info_notes": info_notes,
+        "detected_services": detected_services,
         "envelope": envelope,
         "hops": hops,
         "hop_count": len(hops),

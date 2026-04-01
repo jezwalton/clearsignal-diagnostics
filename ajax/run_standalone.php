@@ -12,24 +12,10 @@ try {
     $target = trim((string)($_POST['target'] ?? ''));
     $checks = $_POST['checks'] ?? [];
     $dkimSelector = trim((string)($_POST['dkim_selector'] ?? ''));
-
     $rawHeadersInput = trim((string)($_POST['raw_headers'] ?? ''));
-    $headerOnlyMode = ($rawHeadersInput !== '' && $target === '');
-
-    if ($target === '' && !$headerOnlyMode) {
-        throw new RuntimeException('Target is required.');
-    }
 
     if (!is_array($checks) || count($checks) === 0) {
         throw new RuntimeException('Select at least one check.');
-    }
-
-    // Header analysis doesn't require a target
-    $isHeaderOnly = (count($cleanChecks) === 1 && $cleanChecks[0] === 'email_header_analysis');
-
-    $parsedTarget = PluginClearsignaldiagTargetParser::parse($target);
-    if (!$parsedTarget['valid'] && !$isHeaderOnly) {
-        throw new RuntimeException('Target is not a valid IP, hostname, domain, or URL.');
     }
 
     $allowedChecks = [
@@ -54,6 +40,18 @@ try {
         throw new RuntimeException('No valid checks selected.');
     }
 
+    // Header analysis doesn't require a target
+    $isHeaderOnly = (count($cleanChecks) === 1 && $cleanChecks[0] === 'email_header_analysis');
+
+    if ($target === '' && !$isHeaderOnly) {
+        throw new RuntimeException('Target is required.');
+    }
+
+    $parsedTarget = PluginClearsignaldiagTargetParser::parse($target);
+    if (!$parsedTarget['valid'] && !$isHeaderOnly) {
+        throw new RuntimeException('Target is not a valid IP, hostname, domain, or URL.');
+    }
+
     $config = PluginClearsignaldiagConfig::getConfig();
     if ($dkimSelector === '') {
         $dkimSelector = (string)$config['default_selector'];
@@ -67,10 +65,8 @@ try {
         'requested_at'   => date('c'),
     ];
 
-    // Pass raw headers for email header analysis
-    $rawHeaders = trim((string)($_POST['raw_headers'] ?? ''));
-    if ($rawHeaders !== '') {
-        $payload['raw_headers'] = $rawHeaders;
+    if ($rawHeadersInput !== '') {
+        $payload['raw_headers'] = $rawHeadersInput;
     }
 
     $result = PluginClearsignaldiagPythonBridge::run($payload);
