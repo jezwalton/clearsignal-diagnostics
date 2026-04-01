@@ -8,7 +8,7 @@ class PluginClearsignaldiagPythonBridge {
 
         $python = trim((string)$config['python_binary']);
         $workerRelative = trim((string)$config['worker_script']);
-        $timeout = max(5, min(120, (int)$config['command_timeout']));
+        $timeout = max(5, min(300, (int)$config['command_timeout']));
 
         // Validate python binary path - must not contain shell metacharacters
         if ($python === '' || preg_match('/[;&|`$<>]/', $python)) {

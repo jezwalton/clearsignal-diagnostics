@@ -18,7 +18,7 @@ class PluginClearsignaldiagConfig extends CommonDBTM {
     private static array $defaults = [
         'python_binary'    => '/usr/bin/python3',
         'worker_script'    => 'python/diagnostics_worker.py',
-        'command_timeout'  => '20',
+        'command_timeout'  => '90',
         'default_selector' => 'selector1',
         'allow_raw_output' => '1',
         'enabled_checks'   => null, // null = all enabled
@@ -77,7 +77,7 @@ class PluginClearsignaldiagConfig extends CommonDBTM {
         $input = [
             'python_binary'    => trim((string)($post['python_binary'] ?? self::$defaults['python_binary'])),
             'worker_script'    => trim((string)($post['worker_script'] ?? self::$defaults['worker_script'])),
-            'command_timeout'  => max(5, min(120, (int)($post['command_timeout'] ?? self::$defaults['command_timeout']))),
+            'command_timeout'  => max(5, min(300, (int)($post['command_timeout'] ?? self::$defaults['command_timeout']))),
             'default_selector' => trim((string)($post['default_selector'] ?? self::$defaults['default_selector'])),
             'allow_raw_output' => isset($post['allow_raw_output']) ? 1 : 0,
             'enabled_checks'   => json_encode($validChecks),
@@ -116,7 +116,7 @@ class PluginClearsignaldiagConfig extends CommonDBTM {
 
         echo "<div class='mb-3'>";
         echo "<label><strong>Command timeout (seconds)</strong></label>";
-        echo "<input class='form-control' type='number' min='5' max='120' name='command_timeout' value='" . htmlspecialchars((string)$config['command_timeout'], ENT_QUOTES, 'UTF-8') . "'>";
+        echo "<input class='form-control' type='number' min='5' max='300' name='command_timeout' value='" . htmlspecialchars((string)$config['command_timeout'], ENT_QUOTES, 'UTF-8') . "'>";
         echo "</div>";
 
         echo "<div class='mb-3'>";
