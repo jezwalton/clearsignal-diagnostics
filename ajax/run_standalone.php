@@ -13,7 +13,10 @@ try {
     $checks = $_POST['checks'] ?? [];
     $dkimSelector = trim((string)($_POST['dkim_selector'] ?? ''));
 
-    if ($target === '') {
+    $rawHeadersInput = trim((string)($_POST['raw_headers'] ?? ''));
+    $headerOnlyMode = ($rawHeadersInput !== '' && $target === '');
+
+    if ($target === '' && !$headerOnlyMode) {
         throw new RuntimeException('Target is required.');
     }
 
@@ -21,8 +24,11 @@ try {
         throw new RuntimeException('Select at least one check.');
     }
 
+    // Header analysis doesn't require a target
+    $isHeaderOnly = (count($cleanChecks) === 1 && $cleanChecks[0] === 'email_header_analysis');
+
     $parsedTarget = PluginClearsignaldiagTargetParser::parse($target);
-    if (!$parsedTarget['valid']) {
+    if (!$parsedTarget['valid'] && !$isHeaderOnly) {
         throw new RuntimeException('Target is not a valid IP, hostname, domain, or URL.');
     }
 
@@ -40,6 +46,8 @@ try {
         // Website/SSL diagnostic checks
         'tls_certificate', 'security_headers', 'http_response',
         'http2_support', 'caa_records', 'cf_ssl_mode',
+        // Email header analysis
+        'email_header_analysis',
     ];
     $cleanChecks = array_values(array_intersect($allowedChecks, $checks));
     if (count($cleanChecks) === 0) {
@@ -51,13 +59,21 @@ try {
         $dkimSelector = (string)$config['default_selector'];
     }
 
-    $result = PluginClearsignaldiagPythonBridge::run([
+    $payload = [
         'target'         => $parsedTarget,
         'checks'         => $cleanChecks,
         'dkim_selector'  => $dkimSelector,
         'requested_by'   => Session::getLoginUserID(),
-        'requested_at'   => date('c')
-    ]);
+        'requested_at'   => date('c'),
+    ];
+
+    // Pass raw headers for email header analysis
+    $rawHeaders = trim((string)($_POST['raw_headers'] ?? ''));
+    if ($rawHeaders !== '') {
+        $payload['raw_headers'] = $rawHeaders;
+    }
+
+    $result = PluginClearsignaldiagPythonBridge::run($payload);
 
     echo json_encode([
         'success' => true,

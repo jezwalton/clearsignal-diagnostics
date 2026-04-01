@@ -15,7 +15,11 @@ import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
+import email.utils
+import re
 import smtplib
+from datetime import datetime, timezone
+from email.parser import HeaderParser
 
 import dns.exception
 import dns.flags
@@ -1245,6 +1249,225 @@ def check_cf_ssl_mode(host: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Email header analysis
+# ---------------------------------------------------------------------------
+
+def _parse_received_header(header: str) -> Dict[str, Any]:
+    """Parse a single Received: header into structured fields."""
+    result: Dict[str, Any] = {"raw": header.strip()}
+
+    # Extract 'from' host
+    from_match = re.search(r'from\s+(\S+)', header, re.IGNORECASE)
+    if from_match:
+        result["from_host"] = from_match.group(1).strip("()")
+
+    # Extract 'by' host
+    by_match = re.search(r'by\s+(\S+)', header, re.IGNORECASE)
+    if by_match:
+        result["by_host"] = by_match.group(1).strip("()")
+
+    # Extract 'with' protocol
+    with_match = re.search(r'with\s+(\S+)', header, re.IGNORECASE)
+    if with_match:
+        result["protocol"] = with_match.group(1).rstrip(";")
+
+    # Extract IP addresses
+    ip_matches = re.findall(r'\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]', header)
+    if ip_matches:
+        result["ips"] = ip_matches
+
+    # Extract timestamp — usually after the semicolon
+    semi_pos = header.rfind(";")
+    if semi_pos >= 0:
+        date_str = header[semi_pos + 1:].strip()
+        parsed = email.utils.parsedate_to_datetime(date_str) if date_str else None
+        if parsed:
+            result["timestamp"] = parsed.isoformat()
+            result["timestamp_utc"] = parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            result["_dt"] = parsed
+    return result
+
+
+def analyse_email_headers(raw_headers: str) -> Dict[str, Any]:
+    """Parse raw email headers and extract routing, auth, and timing information."""
+
+    parser = HeaderParser()
+    msg = parser.parsestr(raw_headers)
+
+    # ---- Basic envelope ----
+    envelope = {
+        "from": msg.get("From", ""),
+        "to": msg.get("To", ""),
+        "cc": msg.get("Cc", ""),
+        "subject": msg.get("Subject", ""),
+        "date": msg.get("Date", ""),
+        "message_id": msg.get("Message-ID", ""),
+        "return_path": msg.get("Return-Path", ""),
+        "reply_to": msg.get("Reply-To", ""),
+    }
+
+    # Parse the Date header
+    if envelope["date"]:
+        try:
+            dt = email.utils.parsedate_to_datetime(envelope["date"])
+            envelope["date_parsed"] = dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+        except Exception:
+            pass
+
+    # ---- Received hops (in reverse order — most recent first) ----
+    received_headers = msg.get_all("Received", [])
+    hops: List[Dict[str, Any]] = []
+    for rh in received_headers:
+        parsed = _parse_received_header(rh)
+        hops.append(parsed)
+
+    # Calculate delays between hops
+    timed_hops = [h for h in hops if "_dt" in h]
+    total_delay_seconds = 0
+    if len(timed_hops) >= 2:
+        for i in range(len(timed_hops) - 1):
+            newer = timed_hops[i]["_dt"]
+            older = timed_hops[i + 1]["_dt"]
+            delay = (newer - older).total_seconds()
+            timed_hops[i]["delay_seconds"] = max(0, round(delay, 1))
+            total_delay_seconds += max(0, delay)
+
+    # Clean internal _dt fields
+    for h in hops:
+        h.pop("_dt", None)
+
+    # ---- Authentication results ----
+    auth_results_raw = msg.get_all("Authentication-Results", [])
+    auth_results: List[Dict[str, Any]] = []
+    for ar in auth_results_raw:
+        entry: Dict[str, Any] = {"raw": ar.strip()}
+        # Parse SPF
+        spf_match = re.search(r'spf\s*=\s*(\w+)', ar, re.IGNORECASE)
+        if spf_match:
+            entry["spf"] = spf_match.group(1).lower()
+        # Parse DKIM
+        dkim_match = re.search(r'dkim\s*=\s*(\w+)', ar, re.IGNORECASE)
+        if dkim_match:
+            entry["dkim"] = dkim_match.group(1).lower()
+        # Parse DMARC
+        dmarc_match = re.search(r'dmarc\s*=\s*(\w+)', ar, re.IGNORECASE)
+        if dmarc_match:
+            entry["dmarc"] = dmarc_match.group(1).lower()
+        # Parse compauth/composite
+        compauth_match = re.search(r'compauth\s*=\s*(\w+)', ar, re.IGNORECASE)
+        if compauth_match:
+            entry["compauth"] = compauth_match.group(1).lower()
+        auth_results.append(entry)
+
+    # Summarise auth
+    auth_summary: Dict[str, str] = {}
+    for ar in auth_results:
+        for key in ("spf", "dkim", "dmarc", "compauth"):
+            if key in ar and key not in auth_summary:
+                auth_summary[key] = ar[key]
+
+    # ---- SPF specific headers ----
+    received_spf = msg.get("Received-SPF", "")
+    spf_result = ""
+    if received_spf:
+        spf_match = re.match(r'(\w+)', received_spf.strip())
+        if spf_match:
+            spf_result = spf_match.group(1).lower()
+
+    # ---- DKIM-Signature ----
+    dkim_sig = msg.get("DKIM-Signature", "")
+    dkim_details: Dict[str, str] = {}
+    if dkim_sig:
+        for part in dkim_sig.split(";"):
+            p = part.strip()
+            if "=" in p:
+                k, v = p.split("=", 1)
+                dkim_details[k.strip()] = v.strip()
+
+    # ---- Spam / SCL headers ----
+    spam_headers: Dict[str, str] = {}
+    spam_keys = [
+        "X-Spam-Status", "X-Spam-Score", "X-Spam-Flag",
+        "X-MS-Exchange-Organization-SCL", "X-Microsoft-Antispam",
+        "X-Forefront-Antispam-Report", "X-Google-DKIM-Signature",
+        "X-Gm-Message-State", "X-MS-Exchange-Organization-AuthSource",
+        "X-MS-Exchange-Organization-AuthAs",
+        "X-OriginatorOrg", "X-MS-Exchange-CrossTenant-AuthSource",
+        "X-Mailer", "X-MimeOLE", "User-Agent",
+    ]
+    for key in spam_keys:
+        val = msg.get(key, "")
+        if val:
+            spam_headers[key] = val.strip()
+
+    # ---- Determine issues ----
+    issues: List[str] = []
+    warnings: List[str] = []
+
+    if auth_summary.get("spf") in ("fail", "softfail", "permerror", "temperror"):
+        issues.append(f"SPF {auth_summary['spf']}")
+    elif auth_summary.get("spf") == "none":
+        warnings.append("No SPF result")
+
+    if auth_summary.get("dkim") in ("fail", "permerror", "temperror"):
+        issues.append(f"DKIM {auth_summary['dkim']}")
+    elif auth_summary.get("dkim") == "none":
+        warnings.append("No DKIM result")
+
+    if auth_summary.get("dmarc") in ("fail",):
+        issues.append(f"DMARC {auth_summary['dmarc']}")
+    elif auth_summary.get("dmarc") == "none":
+        warnings.append("No DMARC result")
+
+    if total_delay_seconds > 300:
+        warnings.append(f"Total delivery took {int(total_delay_seconds)}s ({int(total_delay_seconds/60)}min)")
+
+    # Find the slowest hop
+    slowest_hop = None
+    slowest_delay = 0
+    for h in hops:
+        d = h.get("delay_seconds", 0)
+        if d > slowest_delay:
+            slowest_delay = d
+            slowest_hop = h.get("by_host", "unknown")
+
+    if slowest_delay > 30:
+        warnings.append(f"Slowest hop: {int(slowest_delay)}s at {slowest_hop}")
+
+    status = "ok"
+    if issues:
+        status = "fail"
+    elif warnings:
+        status = "warn"
+
+    summary_parts = []
+    if auth_summary:
+        auth_str = ", ".join(f"{k.upper()}={v}" for k, v in auth_summary.items())
+        summary_parts.append(auth_str)
+    summary_parts.append(f"{len(hops)} hop(s)")
+    if total_delay_seconds > 0:
+        summary_parts.append(f"{int(total_delay_seconds)}s total transit")
+
+    return {
+        "status": status,
+        "summary": " | ".join(summary_parts),
+        "issues": issues,
+        "warnings": warnings,
+        "envelope": envelope,
+        "hops": hops,
+        "hop_count": len(hops),
+        "total_delay_seconds": round(total_delay_seconds, 1),
+        "slowest_hop": {"host": slowest_hop, "delay_seconds": slowest_delay} if slowest_hop else None,
+        "auth_summary": auth_summary,
+        "auth_results": auth_results,
+        "received_spf": received_spf,
+        "spf_result": spf_result,
+        "dkim_signature": dkim_details,
+        "spam_headers": spam_headers,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Domain WHOIS (lightweight — expiry only)
 # ---------------------------------------------------------------------------
 
@@ -1720,6 +1943,19 @@ def run_checks(payload: Dict[str, Any]) -> Dict[str, Any]:
             output.append(check_caa_records(domain))
         elif check == "cf_ssl_mode" and host:
             output.append(check_cf_ssl_mode(host))
+        # Email header analysis (payload contains raw_headers instead of target)
+        elif check == "email_header_analysis":
+            raw_headers = payload.get("raw_headers", "")
+            if raw_headers:
+                analysis = analyse_email_headers(raw_headers)
+                output.append({
+                    "name": "Email Header Analysis",
+                    "status": analysis["status"],
+                    "summary": analysis["summary"],
+                    "details": analysis,
+                    "likely_root_cause": "; ".join(analysis.get("issues", [])),
+                    "recommended_fix": "",
+                })
 
     statuses = [c.get("status", "ok") for c in output]
     if "fail" in statuses:
