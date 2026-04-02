@@ -36,7 +36,7 @@ try {
             $jobs[] = [
                 'job_id' => (int)$row['id'],
                 'status' => (string)$row['status'],
-                'type' => (string)($row['type'] ?? ''),
+                'job_type' => (string)($row['job_type'] ?? ''),
             ];
         }
 

@@ -77,8 +77,35 @@ try {
                     'FROM' => $reportTable,
                     'WHERE' => ['id' => $maxIds],
                 ]);
+                // Category groupings for per-category status icons
+                $categoryMap = [
+                    'dns'     => ['Full Record Scan','SOA Record','Nameservers','Delegation Trace','DNSSEC','Cloudflare','Resolver Comparison','Domain Registration'],
+                    'email'   => ['MX Records','SMTP Connectivity','SPF','DKIM','DMARC'],
+                    'website' => ['HTTP Response','TLS Certificate','Security Headers','HTTP/2 Support','CAA Records','Cloudflare SSL Mode'],
+                ];
+
                 foreach ($reportRows as $row) {
                     $key = (int)$row['entities_id'] . ':' . $row['domain'];
+
+                    // Extract per-category worst status from report JSON
+                    $categories = ['dns' => null, 'email' => null, 'website' => null];
+                    $reportJson = json_decode($row['report_json'] ?? '', true);
+                    if (is_array($reportJson) && isset($reportJson['checks'])) {
+                        foreach ($categoryMap as $cat => $checkNames) {
+                            $catChecks = array_filter($reportJson['checks'], fn($c) => in_array($c['name'] ?? '', $checkNames));
+                            if ($catChecks) {
+                                $statuses = array_column($catChecks, 'status');
+                                if (in_array('fail', $statuses)) {
+                                    $categories[$cat] = 'fail';
+                                } elseif (in_array('warn', $statuses)) {
+                                    $categories[$cat] = 'warn';
+                                } else {
+                                    $categories[$cat] = 'ok';
+                                }
+                            }
+                        }
+                    }
+
                     $latestReports[$key] = [
                         'id' => (int)$row['id'],
                         'status' => (string)$row['status'],
@@ -88,6 +115,7 @@ try {
                         'checks_fail' => (int)$row['checks_fail'],
                         'date_creation' => (string)$row['date_creation'],
                         'users_id' => (int)$row['users_id'],
+                        'categories' => $categories,
                     ];
                 }
             }

@@ -90,7 +90,7 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
         <div class="card-header"><h5 class="card-title mb-0"><i class="ti ti-history me-1"></i>Previous Reports</h5></div>
         <div class="card-body p-0">
           <table class="table table-sm table-striped mb-0">
-            <thead><tr><th>Date</th><th>Domain</th><th>Status</th><th>OK</th><th>Warn</th><th>Fail</th></tr></thead>
+            <thead><tr><th>Date</th><th>Domain</th><th>Status</th><th>OK</th><th>Warn</th><th>Fail</th><th style="width:30px;"></th></tr></thead>
             <tbody id="hc-history-tbody"></tbody>
           </table>
         </div>
@@ -260,15 +260,115 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     data.append('entities_id', currentEntityId);
     ajaxPost(PLUGIN_ROOT+'/ajax/entity_domains.php', data).then(resp=>{
       const tbody = document.getElementById('hc-history-tbody');
-      if (!resp.reports.length) { tbody.innerHTML='<tr><td colspan="6" class="text-muted text-center">No previous reports.</td></tr>'; }
+      if (!resp.reports.length) { tbody.innerHTML='<tr><td colspan="7" class="text-muted text-center">No previous reports.</td></tr>'; }
       else {
         tbody.innerHTML = resp.reports.map(r=>
-          '<tr><td class="small">'+esc(r.date_creation)+'</td><td><code>'+esc(r.domain)+'</code></td><td>'+statusBadge(r.status)+'</td>'
-          +'<td class="text-success">'+r.checks_ok+'</td><td class="text-warning">'+r.checks_warn+'</td><td class="text-danger">'+r.checks_fail+'</td></tr>'
+          '<tr class="hc-report-row" style="cursor:pointer;" data-report-id="'+r.id+'" title="Click to view details">'
+          +'<td class="small">'+esc(r.date_creation)+'</td><td><code>'+esc(r.domain)+'</code></td><td>'+statusBadge(r.status)+'</td>'
+          +'<td class="text-success">'+r.checks_ok+'</td><td class="text-warning">'+r.checks_warn+'</td><td class="text-danger">'+r.checks_fail+'</td>'
+          +'<td><i class="ti ti-chevron-down text-muted"></i></td></tr>'
+          +'<tr class="hc-report-detail" id="hc-detail-'+r.id+'" style="display:none;"><td colspan="7" class="p-0"></td></tr>'
         ).join('');
       }
       document.getElementById('hc-history-section').style.display='block';
     });
+  }
+
+  // Click handler for report rows
+  document.getElementById('hc-history-tbody').addEventListener('click', function(e) {
+    const row = e.target.closest('.hc-report-row');
+    if (!row) return;
+    const reportId = row.dataset.reportId;
+    const detailRow = document.getElementById('hc-detail-'+reportId);
+    if (!detailRow) return;
+
+    // Toggle
+    if (detailRow.style.display !== 'none') {
+      detailRow.style.display = 'none';
+      row.querySelector('.ti').className = 'ti ti-chevron-down text-muted';
+      return;
+    }
+
+    // Load if not already loaded
+    const cell = detailRow.querySelector('td');
+    if (!cell.dataset.loaded) {
+      cell.innerHTML = '<div class="p-3 text-muted"><div class="spinner-border spinner-border-sm me-2"></div>Loading report...</div>';
+      detailRow.style.display = '';
+      row.querySelector('.ti').className = 'ti ti-chevron-up text-primary';
+
+      ajaxGet(PLUGIN_ROOT+'/ajax/entity_domains.php?action=view_report&report_id='+reportId+'&entities_id='+currentEntityId)
+      .then(resp => {
+        const rpt = resp.report;
+        if (!rpt || !rpt.data || !rpt.data.checks) {
+          cell.innerHTML = '<div class="p-3 text-muted">No detailed data available for this report.</div>';
+          cell.dataset.loaded = '1';
+          return;
+        }
+        cell.innerHTML = '<div class="p-3">' + renderReportDetail(rpt.domain, rpt.data) + '</div>';
+        cell.dataset.loaded = '1';
+      })
+      .catch(err => {
+        cell.innerHTML = '<div class="p-3 text-danger">'+esc(err.message)+'</div>';
+        cell.dataset.loaded = '1';
+      });
+    } else {
+      detailRow.style.display = '';
+      row.querySelector('.ti').className = 'ti ti-chevron-up text-primary';
+    }
+  });
+
+  function renderReportDetail(domain, data) {
+    const checks = data.checks || [];
+    const categories = {
+      'DNS': ['Full Record Scan','SOA Record','Nameservers','Delegation Trace','DNSSEC','Cloudflare','Resolver Comparison','Domain Registration'],
+      'Email': ['MX Records','SMTP Connectivity','SPF','DKIM','DMARC'],
+      'Website': ['HTTP Response','TLS Certificate','Security Headers','HTTP/2 Support','CAA Records','Cloudflare SSL Mode'],
+    };
+
+    let html = '';
+    for (const [catName, checkNames] of Object.entries(categories)) {
+      const catChecks = checks.filter(c => checkNames.includes(c.name));
+      if (!catChecks.length) continue;
+      const catWorst = catChecks.reduce((w,c) => c.status==='fail'?'fail':(c.status==='warn'&&w!=='fail'?'warn':w), 'ok');
+      html += '<h6 class="mt-2">' + statusBadge(catWorst) + ' ' + esc(catName) + '</h6>';
+      html += '<table class="table table-sm table-striped mb-2"><tbody>';
+      for (const c of catChecks) {
+        const dot = c.status==='ok'?'text-success':c.status==='warn'?'text-warning':'text-danger';
+        html += '<tr><td style="width:200px;"><i class="ti ti-circle-filled '+dot+' me-1" style="font-size:0.6rem;"></i>'+esc(c.name)+'</td>';
+        html += '<td class="small">'+esc(c.summary);
+        // Inline details for key checks
+        const d = c.details || {};
+        if (c.name === 'MX Records' && d.mx && d.mx.length) {
+          html += '<div class="text-muted mt-1">' + d.mx.map(m => '<code>' + m.priority + ' ' + esc(m.exchange) + '</code>').join(', ') + '</div>';
+        }
+        if (c.name === 'Nameservers' && d.nameservers && d.nameservers.length) {
+          html += '<div class="text-muted mt-1">' + d.nameservers.map(n => '<code>' + esc(n.nameserver) + '</code>' + (n.is_cloudflare ? ' <span class="badge bg-warning text-dark" style="font-size:0.6rem;">CF</span>' : '')).join(', ') + '</div>';
+        }
+        if (c.name === 'SPF' && d.spf) {
+          html += '<div class="text-muted mt-1"><code style="word-break:break-all; font-size:0.75rem;">' + esc(d.spf) + '</code></div>';
+        }
+        if (c.name === 'DMARC' && d.record) {
+          html += '<div class="text-muted mt-1"><code style="word-break:break-all; font-size:0.75rem;">' + esc(d.record) + '</code></div>';
+        }
+        if (c.name === 'TLS Certificate' && d.subject_cn) {
+          html += '<div class="text-muted mt-1">CN: <code>' + esc(d.subject_cn) + '</code> — Issuer: ' + esc(d.issuer_org || d.issuer_cn || '') + ' — Expires: ' + esc(d.expires || '') + (d.days_remaining != null ? ' (' + d.days_remaining + 'd)' : '') + '</div>';
+        }
+        if (c.name === 'SMTP Connectivity' && d.mx_hosts && d.mx_hosts.length) {
+          html += '<div class="text-muted mt-1">' + d.mx_hosts.map(h => '<code>' + esc(h.host) + '</code> ' + (h.status==='ok' ? '<span class="text-success">&#10003;</span>' : '<span class="text-danger">&#10007;</span>') + (h.starttls ? ' TLS' : '')).join(', ') + '</div>';
+        }
+        if (c.name === 'SOA Record' && d.serial) {
+          html += '<div class="text-muted mt-1">Serial: <code>' + esc(String(d.serial)) + '</code> — NS: <code>' + esc(d.primary_ns || '') + '</code></div>';
+        }
+        if (c.name === 'Domain Registration' && d.registrar) {
+          html += '<div class="text-muted mt-1">' + esc(d.registrar) + (d.expiry ? ' — Expires: ' + esc(d.expiry) : '') + '</div>';
+        }
+        html += '</td></tr>';
+        if (c.likely_root_cause) html += '<tr><td></td><td class="small text-danger">'+esc(c.likely_root_cause)+'</td></tr>';
+        if (c.recommended_fix) html += '<tr><td></td><td class="small text-info">'+esc(c.recommended_fix)+'</td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+    return html || '<p class="text-muted">No check data.</p>';
   }
 
   // ---- Render health results for a domain ----
@@ -374,9 +474,13 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     const allResults = {};
     let hasError = false;
 
+    const jobIds = [];
+    let anyQueued = false;
+
+    // Step 1: Dispatch all jobs
     for (let i = 0; i < entityDomains.length; i++) {
       const dom = entityDomains[i].domain;
-      loadingText.textContent = 'Checking '+dom+' ('+(i+1)+'/'+entityDomains.length+')...';
+      loadingText.textContent = 'Dispatching '+dom+' ('+(i+1)+'/'+entityDomains.length+')...';
 
       try {
         const data = new FormData();
@@ -385,13 +489,45 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
         data.append('store_result', '1');
         data.append('dkim_selector', selector);
         const resp = await ajaxPost(PLUGIN_ROOT+'/ajax/health_check.php', data);
-        allResults[dom] = resp.data;
-        resultsSection.innerHTML += renderDomainResult(dom, resp.data);
-        resultsSection.style.display='block';
+
+        if (resp.queued) {
+          anyQueued = true;
+          if (resp.job_id) jobIds.push(resp.job_id);
+        } else if (resp.data) {
+          allResults[dom] = resp.data;
+          resultsSection.innerHTML += renderDomainResult(dom, resp.data);
+          resultsSection.style.display='block';
+        }
       } catch (err) {
         resultsSection.innerHTML += '<div class="alert alert-danger">'+esc(dom)+': '+esc(err.message)+'</div>';
         resultsSection.style.display='block';
       }
+    }
+
+    // Step 2: If jobs were queued, poll for completion
+    if (anyQueued) {
+      loadingText.textContent = 'Jobs dispatched to worker — waiting for results...';
+      const startTime = new Date().toISOString().replace('T',' ').substring(0,19);
+      let pollCount = 0;
+      const maxPolls = 120; // 10 min max
+
+      while (pollCount < maxPolls) {
+        await new Promise(r => setTimeout(r, 5000)); // Poll every 5s
+        pollCount++;
+
+        try {
+          const pollResp = await ajaxGet(PLUGIN_ROOT+'/ajax/job_status.php?action=poll_reports&entities_id='+currentEntityId+'&since='+encodeURIComponent(startTime));
+          const done = pollResp.count || 0;
+          loadingText.textContent = 'Processing: '+done+'/'+entityDomains.length+' domains complete...';
+
+          if (done >= entityDomains.length) break;
+        } catch(e) {}
+      }
+
+      // Load final results from history
+      loadHistory();
+      resultsSection.innerHTML = '<div class="alert alert-success">Health checks complete. See Previous Reports below for results.</div>';
+      resultsSection.style.display = 'block';
     }
 
     loadingEl.style.display='none';

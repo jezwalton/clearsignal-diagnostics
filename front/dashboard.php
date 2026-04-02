@@ -80,13 +80,16 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
         <tr>
           <th style="cursor:pointer;" data-sort="entity">Client <i class="ti ti-arrows-sort"></i></th>
           <th style="cursor:pointer;" data-sort="domain">Domain <i class="ti ti-arrows-sort"></i></th>
-          <th style="width:80px;">Status</th>
+          <th style="width:70px;">Overall</th>
+          <th style="width:50px;" title="DNS">DNS</th>
+          <th style="width:50px;" title="Email">Mail</th>
+          <th style="width:50px;" title="Website">Web</th>
           <th style="width:50px;">OK</th>
           <th style="width:50px;">Warn</th>
           <th style="width:50px;">Fail</th>
-          <th style="width:130px; cursor:pointer;" data-sort="date">Last Checked <i class="ti ti-arrows-sort"></i></th>
-          <th style="width:80px;">Age</th>
-          <th style="width:80px;"></th>
+          <th style="width:120px; cursor:pointer;" data-sort="date">Checked <i class="ti ti-arrows-sort"></i></th>
+          <th style="width:50px;">Age</th>
+          <th style="width:40px;"></th>
         </tr>
       </thead>
       <tbody id="db-tbody"></tbody>
@@ -112,6 +115,13 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     if (!st) return '<span class="badge bg-secondary">—</span>';
     const c = st==='ok'?'bg-success':st==='warn'?'bg-warning text-dark':'bg-danger';
     return '<span class="badge '+c+'">'+esc(st.toUpperCase())+'</span>';
+  }
+
+  function catIcon(st) {
+    if (!st) return '<span class="text-muted">—</span>';
+    if (st === 'ok') return '<i class="ti ti-circle-check text-success" style="font-size:1.1rem;"></i>';
+    if (st === 'warn') return '<i class="ti ti-alert-triangle text-warning" style="font-size:1.1rem;"></i>';
+    return '<i class="ti ti-circle-x text-danger" style="font-size:1.1rem;"></i>';
   }
 
   function ageBadge(days, neverChecked) {
@@ -193,7 +203,7 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
     const tbody = document.getElementById('db-tbody');
 
     if (!data.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No domains match the current filter.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-3">No domains match the current filter.</td></tr>';
       document.getElementById('db-footer').textContent = '0 domains shown';
       return;
     }
@@ -204,16 +214,21 @@ $pluginRoot = Plugin::getWebDir('clearsignaldiag');
       const rowClass = d.never_checked ? '' : (r?.status==='fail'?' table-danger':r?.status==='warn'?' table-warning':'');
       const date = r ? r.date_creation.substring(0, 16) : '—';
 
+      const cats = r?.categories || {};
+
       html += '<tr class="'+rowClass+'">';
       html += '<td><strong>'+esc(d.entity_name)+'</strong></td>';
       html += '<td><code>'+esc(d.domain)+'</code>'+(d.is_primary?' <span class="badge bg-primary" style="font-size:0.6rem;">P</span>':'')+'</td>';
       html += '<td>'+statusBadge(r?.status)+'</td>';
-      html += '<td class="text-success">'+(r?r.checks_ok:'—')+'</td>';
-      html += '<td class="text-warning">'+(r?r.checks_warn:'—')+'</td>';
-      html += '<td class="text-danger">'+(r?r.checks_fail:'—')+'</td>';
+      html += '<td class="text-center">'+catIcon(cats.dns)+'</td>';
+      html += '<td class="text-center">'+catIcon(cats.email)+'</td>';
+      html += '<td class="text-center">'+catIcon(cats.website)+'</td>';
+      html += '<td class="text-center text-success">'+(r?r.checks_ok:'—')+'</td>';
+      html += '<td class="text-center text-warning">'+(r?r.checks_warn:'—')+'</td>';
+      html += '<td class="text-center text-danger">'+(r?r.checks_fail:'—')+'</td>';
       html += '<td class="small">'+esc(date)+'</td>';
       html += '<td>'+ageBadge(d.days_since_check, d.never_checked)+'</td>';
-      html += '<td><a href="'+PLUGIN_ROOT+'/front/health_check.php?entities_id='+d.entities_id+'&domain='+encodeURIComponent(d.domain)+'&entity_name='+encodeURIComponent(d.entity_name)+'" class="btn btn-sm btn-outline-primary" title="Run health check for '+esc(d.domain)+'"><i class="ti ti-player-play"></i></a></td>';
+      html += '<td><a href="'+PLUGIN_ROOT+'/front/health_check.php?entities_id='+d.entities_id+'&domain='+encodeURIComponent(d.domain)+'&entity_name='+encodeURIComponent(d.entity_name)+'" class="btn btn-sm btn-outline-primary py-0 px-1" title="Run health check"><i class="ti ti-player-play"></i></a></td>';
       html += '</tr>';
     }
     tbody.innerHTML = html;

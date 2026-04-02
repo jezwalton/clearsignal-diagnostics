@@ -49,6 +49,39 @@ try {
             echo json_encode(['success' => true, 'reports' => $reports], JSON_UNESCAPED_SLASHES);
             break;
 
+        case 'view_report':
+            $reportId = (int)($_GET['report_id'] ?? $_POST['report_id'] ?? 0);
+            if ($reportId <= 0) {
+                throw new RuntimeException('Invalid report ID.');
+            }
+            global $DB;
+            $reportTable = 'glpi_plugin_clearsignaldiag_health_reports';
+            $rows = $DB->request([
+                'FROM' => $reportTable,
+                'WHERE' => ['id' => $reportId],
+                'LIMIT' => 1,
+            ]);
+            $row = $rows->current();
+            if (!$row) {
+                throw new RuntimeException('Report not found.');
+            }
+            $reportData = json_decode($row['report_json'] ?? '{}', true);
+            echo json_encode([
+                'success' => true,
+                'report' => [
+                    'id' => (int)$row['id'],
+                    'domain' => (string)$row['domain'],
+                    'status' => (string)$row['status'],
+                    'checks_run' => (int)$row['checks_run'],
+                    'checks_ok' => (int)$row['checks_ok'],
+                    'checks_warn' => (int)$row['checks_warn'],
+                    'checks_fail' => (int)$row['checks_fail'],
+                    'date_creation' => (string)$row['date_creation'],
+                    'data' => $reportData,
+                ],
+            ], JSON_UNESCAPED_SLASHES);
+            break;
+
         case 'search_entities':
             $search = trim((string)($_GET['q'] ?? ''));
             if (strlen($search) < 2) {
